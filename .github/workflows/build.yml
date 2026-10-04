@@ -68,10 +68,10 @@ jobs:
 
       - name: Build vsix
         shell: bash
-        run: python scripts/build-vsix.py . "${GITHUB_REF_NAME#v}" out.vsix
+        run: python scripts/build-vsix.py . "${GITHUB_REF_NAME#v}" "kimi-companion-${GITHUB_REF_NAME#v}.vsix"
 
       - name: Create GitHub release
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release create "${GITHUB_REF_NAME}" out.vsix --title "Kimi Code Companion ${GITHUB_REF_NAME#v}" --generate-notes
+        run: gh release create "${GITHUB_REF_NAME}" "kimi-companion-${GITHUB_REF_NAME#v}.vsix" --title "Kimi Code Companion ${GITHUB_REF_NAME#v}" --generate-notes
