@@ -7,9 +7,10 @@ Companion extension for the official **Kimi Code** VS Code extension (`moonshot-
 - **Rename Kimi windows** (`Kimi Code: Rename Window`);
 - **Automatic window titles from the conversation topic** (while a window is still called "Kimi Code", the title is taken from the session's `title`/`lastPrompt`);
 - **`Kimi Code: Reopen Closed Window`** — reopens the last closed Kimi window (remembers up to 5);
-- **`Kimi Code: Usage`** — the current subscription quota (5h / 7d / monthly limits plus the booster wallet) as a separate report;
+- **`Kimi Code: Usage`** — the current subscription quota (5h / 7d / monthly limits plus the booster wallet) as a separate report, with live rate-window counters (used/limit, e.g. `37/100`);
+- **DeepSeek balance in the Usage report and status bar tooltip** (reads the `[providers.deepseek]` key from the Kimi Code config);
 - **Usage percent in the status bar** — refreshed every 5 minutes (`kimiCompanion.usageInStatusBar`);
-- **Status bar menu** — clicking the button opens a QuickPick: Usage, New window, Reopen closed window, and the list of open windows to focus;
+- **Status bar menu** — clicking the button opens a QuickPick: Usage, New window, Reopen closed window, and the list of open windows to focus (the tooltip shows the usage percent and the DeepSeek balance);
 - **`Ctrl+Alt+K`** (`Cmd+Alt+K` on macOS) — new Kimi window;
 - **`Kimi Code: Diagnostics`** — a state report: versions, all 7 patches, hooks, windows, saved state;
 - Restores the conversation in the Kimi **sidebar** as well.
@@ -44,7 +45,7 @@ VS Code does not let one extension touch another extension's webview panels (nei
 | 4 | extension.js | `/*__kimiCompanion2__*/` | hooks `__kimiCompanionGetSessionId / GetWebviewId / LoadSession` |
 | 5 | extension.js | `__kimiCompanionGetSidebarId` | sidebar webview id hook |
 | 6 | webview.js | `__kimiCompanionLoadSessionInUi` | webview handler for `__kimiCompanionLoadSession` — the stock `loadSessionHistory → loadSession` flow |
-| 7 | extension.js | `__kimiCompanionGetUsage` | subscription quota hook via `harness.auth.getManagedUsage` |
+| 7 | extension.js | `__kimiCompanionGetUsage` | subscription quota hook via `harness.auth.getManagedUsage` (fallback — the companion normally reads the quota directly) |
 
 Originals are kept next to the patched files: `extension.js.bak-kimi-companion`, `webview.js.bak-kimi-companion`.
 
@@ -56,7 +57,7 @@ To keep the patches from being wiped by a random auto-update, pin `moonshot-ai.k
 
 ## Install / uninstall
 
-Install: `code --install-extension kimi-companion-1.1.0.vsix`, then reload the window (the first activation patches the Kimi extension and offers one more reload).
+Install: `code --install-extension kimi-companion-<version>.vsix`, then reload the window (the first activation patches the Kimi extension and offers one more reload).
 
 Uninstall:
 1. Remove this extension.

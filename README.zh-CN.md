@@ -7,9 +7,10 @@
 - **重命名 Kimi 窗口**（`Kimi Code: Rename Window`）；
 - **根据对话主题自动命名窗口**（当窗口仍叫「Kimi Code」时，自动取会话的 `title`/`lastPrompt` 作为标题）；
 - **`Kimi Code: Reopen Closed Window`**——重新打开最近关闭的 Kimi 窗口（最多记住 5 个）；
-- **`Kimi Code: Usage`**——以单独的报告显示当前订阅额度（5 小时 / 7 天 / 每月限额以及 booster 钱包）；
+- **`Kimi Code: Usage`**——以单独的报告显示当前订阅额度（5 小时 / 7 天 / 每月限额以及 booster 钱包），并显示各时间窗口的实时计数器（已用/上限，例如 `37/100`）；
+- **Usage 报告与状态栏悬停提示中的 DeepSeek 余额**（读取 Kimi Code 配置中的 `[providers.deepseek]` 键）；
 - **状态栏显示用量百分比**——每 5 分钟刷新一次（设置项 `kimiCompanion.usageInStatusBar`）；
-- **状态栏菜单**——点击状态栏按钮打开 QuickPick：Usage、New window、Reopen closed window，以及已打开窗口列表（选中即聚焦）；
+- **状态栏菜单**——点击状态栏按钮打开 QuickPick：Usage、New window、Reopen closed window，以及已打开窗口列表（选中即聚焦；悬停提示中显示用量百分比与 DeepSeek 余额）；
 - **`Ctrl+Alt+K`**（macOS 为 `Cmd+Alt+K`）——新建 Kimi 窗口；
 - **`Kimi Code: Diagnostics`**——状态报告：版本、全部 7 处补丁、钩子、窗口、已保存的状态；
 - 同时恢复 Kimi **侧边栏**中的对话。
@@ -44,7 +45,7 @@ VS Code 不允许一个扩展访问另一个扩展的 webview 面板（既不能
 | 4 | extension.js | `/*__kimiCompanion2__*/` | 钩子 `__kimiCompanionGetSessionId / GetWebviewId / LoadSession` |
 | 5 | extension.js | `__kimiCompanionGetSidebarId` | 侧边栏 webview id 钩子 |
 | 6 | webview.js | `__kimiCompanionLoadSessionInUi` | webview 端处理 `__kimiCompanionLoadSession` 事件——走原生 `loadSessionHistory → loadSession` 流程 |
-| 7 | extension.js | `__kimiCompanionGetUsage` | 通过 `harness.auth.getManagedUsage` 获取订阅额度的钩子 |
+| 7 | extension.js | `__kimiCompanionGetUsage` | 通过 `harness.auth.getManagedUsage` 获取订阅额度的钩子（备用路径——伴侣扩展通常直接读取额度） |
 
 原始文件保留在旁：`extension.js.bak-kimi-companion`、`webview.js.bak-kimi-companion`。
 
@@ -56,7 +57,7 @@ VS Code 不允许一个扩展访问另一个扩展的 webview 面板（既不能
 
 ## 安装 / 卸载
 
-安装：`code --install-extension kimi-companion-1.1.0.vsix`，然后重新加载窗口（首次激活会为 Kimi 扩展打补丁并提示再重载一次）。
+安装：`code --install-extension kimi-companion-<version>.vsix`，然后重新加载窗口（首次激活会为 Kimi 扩展打补丁并提示再重载一次）。
 
 卸载：
 1. 卸载本扩展；

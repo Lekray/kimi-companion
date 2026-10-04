@@ -97,6 +97,8 @@ function getHooks() {
 // --- Subscription usage (quotas) -------------------------------------
 
 const USAGE_PROVIDER = "managed:kimi-code";
+const KIMI_USAGE_URL = "https://api.kimi.com/coding/v1/usages";
+const DEEPSEEK_BALANCE_URL = "https://api.deepseek.com/user/balance";
 const USAGE_CACHE_MS = 60000;
 const USAGE_REFRESH_MS = 5 * 60 * 1000;
 const USAGE_URI = "kimi-companion://report/Kimi Code Usage.txt";
@@ -114,25 +116,186 @@ let statusItem = null;
 let reportProvider = null;
 let usageCache = { data: null, at: 0 };
 
-async function getUsage(force) {
-	const fn = globalThis.__kimiCompanionGetUsage;
-	if (typeof fn !== "function") return null;
-	if (!force && usageCache.data && Date.now() - usageCache.at < USAGE_CACHE_MS) return usageCache.data;
-	let res;
+function kimiCredentialsFile() {
 	try {
-		res = await fn(USAGE_PROVIDER);
-	} catch (err) {
-		log.appendLine(`[usage] hook threw: ${err}`);
+		const dir = path.join(kimiHome, "credentials");
+		const files = fs
+			.readdirSync(dir)
+			.filter((f) => f.endsWith(".json"))
+			.map((f) => ({ f, m: fs.statSync(path.join(dir, f)).mtimeMs }))
+			.sort((a, b) => b.m - a.m);
+		return files.length > 0 ? path.join(dir, files[0].f) : null;
+	} catch {
 		return null;
 	}
-	if (res && res.kind === "ok") usageCache = { data: res, at: Date.now() };
+}
+
+function quotaWindowLabel(duration, timeUnit) {
+	const n = Number(duration) || 0;
+	const minutes =
+		timeUnit === "TIME_UNIT_MINUTE" ? n :
+		timeUnit === "TIME_UNIT_HOUR" ? n * 60 :
+		timeUnit === "TIME_UNIT_DAY" ? n * 1440 : 0;
+	if (minutes === 0) return `${duration} ${timeUnit || "window"}`;
+	if (minutes % 1440 === 0) return `${minutes / 1440}-day window`;
+	if (minutes % 60 === 0) return `${minutes / 60}-hour window`;
+	return `${minutes}-minute window`;
+}
+
+const USAGE_KEY_MAP = {
+	limit_5h: "limit5h",
+	limit_7d: "limit7d",
+	limit_month_total: "monthTotal",
+	limit_month_code: "monthCode"
+};
+
+function parseDirectQuota(d) {
+	const windows = [];
+	for (const entry of d.limits || []) {
+		const detail = entry && entry.detail ? entry.detail : {};
+		const win = entry && entry.window ? entry.window : {};
+		const limit = Number(detail.limit);
+		const used = Number(detail.used);
+		if (!isFinite(limit) || limit <= 0 || !isFinite(used)) continue;
+		const durationMinutes =
+			win.timeUnit === "TIME_UNIT_MINUTE" ? Number(win.duration) :
+			win.timeUnit === "TIME_UNIT_HOUR" ? Number(win.duration) * 60 :
+			win.timeUnit === "TIME_UNIT_DAY" ? Number(win.duration) * 1440 : 0;
+		windows.push({
+			label: quotaWindowLabel(win.duration, win.timeUnit),
+			short: durationMinutes === 300 ? "5h" : durationMinutes > 0 ? `${durationMinutes}m` : "win",
+			ratio: used / limit,
+			used: detail.used,
+			limit: detail.limit,
+			resetAt: detail.resetTime || null,
+			durationMinutes
+		});
+	}
+	const usages = {};
+	const wire = d.usages || {};
+	for (const key of Object.keys(USAGE_KEY_MAP)) {
+		const u = wire[key];
+		if (u && typeof u.used_ratio === "number") {
+			usages[USAGE_KEY_MAP[key]] = { usedRatio: u.used_ratio, resetAt: u.reset_time || undefined };
+		}
+	}
+	let extraUsage = null;
+	const bw = d.booster_wallet;
+	if (bw && bw.balance) {
+		const cents8 = (v) => Math.round((Number(v) || 0) / 1e6);
+		const monthlyLimitCents = bw.monthlyChargeLimit ? Number(bw.monthlyChargeLimit.priceInCents) || 0 : 0;
+		extraUsage = {
+			balanceCents: cents8(bw.balance.amountLeft),
+			totalCents: cents8(bw.balance.amount),
+			monthlyChargeLimitEnabled: monthlyLimitCents > 0,
+			monthlyChargeLimitCents: monthlyLimitCents,
+			monthlyUsedCents: bw.monthlyUsed ? Number(bw.monthlyUsed.priceInCents) || 0 : 0,
+			currency:
+				(bw.monthlyChargeLimit && bw.monthlyChargeLimit.currency) ||
+				(bw.topupLimit && bw.topupLimit.currency) ||
+				"USD"
+		};
+	}
+	return { kind: "ok", source: "direct", windows, quota: { usages, extraUsage } };
+}
+
+async function fetchKimiQuotaDirect() {
+	const file = kimiCredentialsFile();
+	if (!file) return null;
+	let tok;
+	try {
+		tok = JSON.parse(fs.readFileSync(file, "utf8"));
+	} catch {
+		return null;
+	}
+	if (!tok || !tok.access_token) return null;
+	if (typeof tok.expires_at === "number" && tok.expires_at - Date.now() / 1000 < 60) {
+		// Let the Kimi extension refresh the token; the next poll reads the fresh file.
+		return null;
+	}
+	const resp = await fetch(KIMI_USAGE_URL, {
+		headers: { Authorization: `Bearer ${tok.access_token}`, Accept: "application/json" }
+	});
+	if (!resp.ok) return null;
+	return parseDirectQuota(await resp.json());
+}
+
+function deepseekApiKey() {
+	try {
+		const cfg = fs.readFileSync(path.join(kimiHome, "config.toml"), "utf8");
+		const m = cfg.match(/\[providers\.deepseek\][^[]*?api_key\s*=\s*"([^"]+)"/);
+		return m ? m[1] : null;
+	} catch {
+		return null;
+	}
+}
+
+async function fetchDeepseekBalance() {
+	const key = deepseekApiKey();
+	if (!key) return null;
+	const resp = await fetch(DEEPSEEK_BALANCE_URL, {
+		headers: { Authorization: `Bearer ${key}`, Accept: "application/json" }
+	});
+	if (!resp.ok) return null;
+	const d = await resp.json();
+	const b = d && Array.isArray(d.balance_infos) ? d.balance_infos[0] : null;
+	if (!b) return null;
+	return {
+		available: d.is_available !== false,
+		currency: b.currency || "USD",
+		total: Number(b.total_balance) || 0,
+		granted: Number(b.granted_balance) || 0,
+		toppedUp: Number(b.topped_up_balance) || 0
+	};
+}
+
+async function getUsage(force) {
+	if (!force && usageCache.data && Date.now() - usageCache.at < USAGE_CACHE_MS) return usageCache.data;
+	let res = null;
+	try {
+		res = await fetchKimiQuotaDirect();
+	} catch (err) {
+		log.appendLine(`[usage] direct quota fetch failed: ${err}`);
+	}
+	if (!res) {
+		const fn = globalThis.__kimiCompanionGetUsage;
+		if (typeof fn === "function") {
+			try {
+				res = await fn(USAGE_PROVIDER);
+			} catch (err) {
+				log.appendLine(`[usage] hook threw: ${err}`);
+				res = null;
+			}
+		}
+	}
+	if (res && res.kind === "ok") {
+		try {
+			res.deepseek = await fetchDeepseekBalance();
+		} catch (err) {
+			log.appendLine(`[usage] deepseek balance failed: ${err}`);
+			res.deepseek = null;
+		}
+		usageCache = { data: res, at: Date.now() };
+	}
 	return res;
 }
 
 function usageSlots(res) {
-	const usages = res && res.quota && res.quota.usages ? res.quota.usages : {};
 	const slots = [];
+	const windows = res && Array.isArray(res.windows) ? res.windows : [];
+	for (const w of windows) {
+		slots.push({
+			label: w.label,
+			short: w.short,
+			ratio: w.ratio,
+			resetAt: w.resetAt,
+			counter: `${w.used}/${w.limit}`
+		});
+	}
+	const has5hWindow = windows.some((w) => w.durationMinutes === 300);
+	const usages = res && res.quota && res.quota.usages ? res.quota.usages : {};
 	for (const def of LIMITS) {
+		if (def.key === "limit5h" && has5hWindow) continue; // live 5h counter supersedes the stale backend field
 		const u = usages[def.key];
 		if (!u || typeof u.usedRatio !== "number") continue;
 		slots.push({ label: def.label, short: def.short, ratio: u.usedRatio, resetAt: u.resetAt || null });
@@ -189,21 +352,32 @@ function usageReport(res) {
 	if (slots.length === 0) lines.push("The response contains no limit data.");
 	for (const s of slots) {
 		const reset = resetStamp(s.resetAt, true);
-		lines.push(
-			`${s.label.padEnd(15)}[${usageBar(s.ratio)}]  ${Math.round(s.ratio * 100)}%` +
-				(reset ? `   resets ${reset}` : "")
-		);
+		let line = `${s.label.padEnd(15)}[${usageBar(s.ratio)}]  ${Math.round(s.ratio * 100)}%`;
+		if (s.counter) line += reset ? `   (${s.counter}, resets ${reset})` : `   (${s.counter})`;
+		else if (reset) line += `   resets ${reset}`;
+		lines.push(line);
 	}
 	const extra = extraUsageLines(res);
 	if (extra.length > 0) lines.push("", ...extra);
+	const ds = res.deepseek;
+	if (ds) {
+		const total = money(ds.total * 100, ds.currency);
+		const detail = `granted ${money(ds.granted * 100, ds.currency)}, topped up ${money(ds.toppedUp * 100, ds.currency)}`;
+		lines.push(
+			"",
+			ds.available
+				? `DeepSeek balance: ${total} (${detail})`
+				: `DeepSeek balance: ${total} — unavailable, top-up needed (${detail})`
+		);
+	}
 	return lines.join("\n") + "\n";
 }
 
 function usageErrorReport(res) {
 	const lines = ["Kimi Code subscription usage (api.kimi.com)", `Updated: ${localStamp(new Date())}`, ""];
 	if (!res) {
-		lines.push("Usage is unavailable: the hook __kimiCompanionGetUsage is not present.");
-		lines.push("The Kimi extension has not been activated or patched yet — reload the window and open a Kimi window.");
+		lines.push("Usage is unavailable: no readable Kimi credentials and no __kimiCompanionGetUsage hook.");
+		lines.push("Sign in to Kimi Code and reload the window so the extension gets activated and patched.");
 	} else {
 		const msg = res.error || res.message || res.reason;
 		lines.push(`Usage request failed: ${typeof msg === "string" ? msg : JSON.stringify(res)}`);
@@ -234,7 +408,11 @@ async function refreshUsageStatus() {
 		const tip = ["Kimi Code"];
 		for (const s of slots) {
 			const reset = resetStamp(s.resetAt, false);
-			tip.push(`${s.short}: ${Math.round(s.ratio * 100)}%${reset ? ` (reset ${reset})` : ""}`);
+			const counter = s.counter ? ` (${s.counter})` : "";
+			tip.push(`${s.short}: ${Math.round(s.ratio * 100)}%${counter}${reset ? ` (reset ${reset})` : ""}`);
+		}
+		if (res.deepseek) {
+			tip.push(`deepseek: ${money(res.deepseek.total * 100, res.deepseek.currency)}`);
 		}
 		item.tooltip = tip.join("\n");
 	} catch (err) {

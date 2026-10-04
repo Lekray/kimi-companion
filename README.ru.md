@@ -7,9 +7,10 @@
 - **переименование окон** Kimi (`Kimi Code: Rename Window`);
 - **автоназвание окон по теме диалога** (пока окно зовётся «Kimi Code» и в нём открыта сессия — берётся `title`/`lastPrompt` из `state.json` сессии);
 - **«Kimi Code: Reopen Closed Window»** — переоткрывает последнее закрытое окно (помнит до 5);
-- **«Kimi Code: Usage»** — текущая квота подписки (лимиты 5 ч / 7 дней / месяц и booster-кошелёк) отдельным отчётом;
+- **«Kimi Code: Usage»** — текущая квота подписки (лимиты 5 ч / 7 дней / месяц и booster-кошелёк) отдельным отчётом, с живыми счётчиками окон (использовано/лимит, например `37/100`);
+- **баланс DeepSeek в отчёте Usage и в тултипе статус-бара** (ключ из секции `[providers.deepseek]` конфига Kimi Code);
 - **процент использования квоты в статус-баре** — обновляется раз в 5 минут (настройка `kimiCompanion.usageInStatusBar`);
-- **меню в статус-баре** — клик по кнопке открывает QuickPick: Usage, New window, Reopen closed window и список открытых окон (фокус по выбору);
+- **меню в статус-баре** — клик по кнопке открывает QuickPick: Usage, New window, Reopen closed window и список открытых окон (фокус по выбору; в тултипе — процент использования и баланс DeepSeek);
 - **`Ctrl+Alt+K`** (`Cmd+Alt+K` на Mac) — новое окно Kimi;
 - **«Kimi Code: Diagnostics»** — отчёт о состоянии: версии, все 7 врезок, хуки, окна, сохранённое состояние;
 - восстановление истории в **сайдбаре** Kimi.
@@ -44,7 +45,7 @@ VS Code не даёт одному расширению доступа к webvie
 | 4 | extension.js | `/*__kimiCompanion2__*/` | хуки `__kimiCompanionGetSessionId / GetWebviewId / LoadSession` |
 | 5 | extension.js | `__kimiCompanionGetSidebarId` | хук поиска webviewId сайдбара |
 | 6 | webview.js | `__kimiCompanionLoadSessionInUi` | обработчик события `__kimiCompanionLoadSession` в вебвью — штатный `loadSessionHistory → loadSession` |
-| 7 | extension.js | `__kimiCompanionGetUsage` | хук квоты подписки через `harness.auth.getManagedUsage` |
+| 7 | extension.js | `__kimiCompanionGetUsage` | хук квоты подписки через `harness.auth.getManagedUsage` (запасной путь — обычно компаньон читает квоту напрямую) |
 
 Оригиналы рядом: `extension.js.bak-kimi-companion`, `webview.js.bak-kimi-companion` (не перезаписывать — это эталон 0.8.1).
 
@@ -56,7 +57,7 @@ VS Code не даёт одному расширению доступа к webvie
 
 ## Откат / удаление
 
-1. Удалить папку `~/.vscode/extensions/lekra.kimi-companion-1.0.0`.
+1. Удалить папку `~/.vscode/extensions/lekra.kimi-companion-<версия>`.
 2. Вернуть оригиналы Kimi: `extension.js.bak-kimi-companion → extension.js`, `webview.js.bak-kimi-companion → webview.js` (в `dist` расширения Kimi). Либо удалить папку `moonshot-ai.kimi-code-*` и поставить расширение заново с маркетплейса.
 3. Перезагрузить окно.
 
