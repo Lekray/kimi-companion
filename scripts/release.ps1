@@ -298,8 +298,15 @@ print("[release]           cached record: %s -> %s" % (relative, version))
     # step 8 - GitHub release
     # ----------------------------------------------------------------------
     Write-Log "step 8/8 creating the GitHub release v$Version"
+    # gh prints "release not found" to stderr; redirecting a native command's
+    # stderr makes PowerShell 5.1 raise a terminating NativeCommandError when
+    # $ErrorActionPreference is 'Stop', so probe with 'Continue' instead.
+    $eap = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
     gh release view "v$Version" 2>$null | Out-Null
-    if ($LASTEXITCODE -eq 0) {
+    $probeExit = $LASTEXITCODE
+    $ErrorActionPreference = $eap
+    if ($probeExit -eq 0) {
         throw "[release] GitHub release v$Version already exists"
     }
     gh release create "v$Version" $VsixPath --title "Kimi Code Companion $Version" --notes $Notes
