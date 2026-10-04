@@ -5,6 +5,19 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.0] - 2026-10-04
+
+### Added
+
+- Pace indicator with depletion forecast and reset countdown in the `Kimi Code: Usage` report and in the status bar tooltip: every quota window shows its spend pace (`fast` / `normal` / `slow` / `idle`), whether it will last until the reset or depletes in ~X, and the time left until the reset.
+- Red status bar background (`errorBackground`) when a short window (≤ 1 day) is projected to deplete before its reset at the current pace.
+- Threshold alerts with a per-window latch: native VS Code notifications when the 5-hour window reaches its threshold (default 80%), the monthly limit reaches 90%, or the DeepSeek balance drops below $1 — fired once per window and re-armed after the reset / recovery.
+- Settings `kimiCompanion.alerts` (default `true`), `kimiCompanion.alertThreshold5h` (default `0.8`), `kimiCompanion.alertThresholdMonth` (default `0.9`), `kimiCompanion.alertDeepseekBelowUsd` (default `1`).
+
+### Fixed
+
+- The quota endpoint is no longer hardcoded: `base_url` is read from the Kimi Code config (`[providers."managed:kimi-code"]`) and from `KIMI_CODE_BASE_URL`, with fallback across the mirrors (`api.kimi.com` / `api.kimi.ai`) and caching of the working URL — fixes quota for accounts where only one of the mirrors works.
+
 ## [1.3.0] - 2026-10-04
 
 ### Added
@@ -49,6 +62,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Self-healing patches for the Kimi extension.
 - Recommended pinned Kimi extension version.
 
+[1.4.0]: https://github.com/Lekray/kimi-companion/compare/v1.3.0...v1.4.0
 [1.3.0]: https://github.com/Lekray/kimi-companion/compare/v1.2.0...v1.3.0
 [1.2.0]: https://github.com/Lekray/kimi-companion/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/Lekray/kimi-companion/compare/v1.0.0...v1.1.0

@@ -7,10 +7,11 @@
 - **重命名 Kimi 窗口**（`Kimi Code: Rename Window`）；
 - **根据对话主题自动命名窗口**（当窗口仍叫「Kimi Code」时，自动取会话的 `title`/`lastPrompt` 作为标题）；
 - **`Kimi Code: Reopen Closed Window`**——重新打开最近关闭的 Kimi 窗口（最多记住 5 个）；
-- **`Kimi Code: Usage`**——以单独的报告显示当前订阅额度（5 小时 / 7 天 / 每月限额以及 booster 钱包），并显示各时间窗口的实时计数器（已用/上限，例如 `37/100`）；
+- **`Kimi Code: Usage`**——以单独的报告显示当前订阅额度（5 小时 / 7 天 / 每月限额以及 booster 钱包），并显示各时间窗口的实时计数器（已用/上限，例如 `37/100`）、消耗速度、耗尽预测以及距重置的倒计时；
 - **Usage 报告与状态栏悬停提示中的 DeepSeek 余额**（读取 Kimi Code 配置中的 `[providers.deepseek]` 键）；
-- **状态栏显示用量百分比**——每 5 分钟刷新一次（设置项 `kimiCompanion.usageInStatusBar`）；
-- **状态栏菜单**——点击状态栏按钮打开 QuickPick：Usage、New window、Reopen closed window，以及已打开窗口列表（选中即聚焦；悬停提示中显示用量百分比与 DeepSeek 余额）；
+- **阈值告警**——带「每个窗口只触发一次」闩锁的原生 VS Code 通知：5 小时窗口 ≥ 80%、月度限额 ≥ 90%、DeepSeek 余额低于 $1（设置项 `kimiCompanion.alerts`、`kimiCompanion.alertThreshold5h`、`kimiCompanion.alertThresholdMonth`、`kimiCompanion.alertDeepseekBelowUsd`）；
+- **状态栏显示用量百分比**——每 5 分钟刷新一次（设置项 `kimiCompanion.usageInStatusBar`）；当短窗口（≤ 1 天）按当前速度会在重置前耗尽时，状态栏变为红色；
+- **状态栏菜单**——点击状态栏按钮打开 QuickPick：Usage、New window、Reopen closed window，以及已打开窗口列表（选中即聚焦；悬停提示中显示用量百分比、消耗速度与距重置倒计时，以及 DeepSeek 余额）；
 - **`Ctrl+Alt+K`**（macOS 为 `Cmd+Alt+K`）——新建 Kimi 窗口；
 - **`Kimi Code: Diagnostics`**——状态报告：版本、全部 7 处补丁、钩子、窗口、已保存的状态；
 - 同时恢复 Kimi **侧边栏**中的对话。
@@ -68,7 +69,11 @@ VS Code 不允许一个扩展访问另一个扩展的 webview 面板（既不能
 
 - `kimiCompanion.restoreTabOnStartup`（默认 `true`）——重载后恢复 Kimi 窗口；
 - `kimiCompanion.statusBarButton`（默认 `true`）——状态栏按钮；
-- `kimiCompanion.usageInStatusBar`（默认 `true`）——在状态栏显示订阅额度用量百分比。
+- `kimiCompanion.usageInStatusBar`（默认 `true`）——在状态栏显示订阅额度用量百分比；
+- `kimiCompanion.alerts`（默认 `true`）——用量超过阈值时发送原生通知（每个限额窗口一次）；
+- `kimiCompanion.alertThreshold5h`（默认 `0.8`）——5 小时窗口的告警阈值（小数 `0..1`）；
+- `kimiCompanion.alertThresholdMonth`（默认 `0.9`）——月度限额的告警阈值（小数 `0..1`）；
+- `kimiCompanion.alertDeepseekBelowUsd`（默认 `1`）——当 DeepSeek 余额低于此金额（美元）时警告。
 
 ## 已知限制
 

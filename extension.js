@@ -100,16 +100,38 @@ const USAGE_PROVIDER = "managed:kimi-code";
 const KIMI_USAGE_URL = "https://api.kimi.com/coding/v1/usages";
 const DEEPSEEK_BALANCE_URL = "https://api.deepseek.com/user/balance";
 const USAGE_CACHE_MS = 60000;
+const ALERT_LATCH_KEY = "kimiQuotaAlertLatch";
+
+let appContext = null;
+let workingQuotaUrl = null;
+
+function quotaUrlCandidates() {
+	const urls = [];
+	const push = (u) => {
+		if (u && !urls.includes(u)) urls.push(u);
+	};
+	const env = process.env.KIMI_CODE_BASE_URL;
+	if (env) push(env.replace(/\/+$/, "") + "/usages");
+	const cfgBase = safe(() => {
+		const cfg = fs.readFileSync(path.join(kimiHome, "config.toml"), "utf8");
+		const m = cfg.match(/\[providers\."managed:kimi-code"\][^[]*?base_url\s*=\s*"([^"]+)"/);
+		return m ? m[1] : null;
+	});
+	if (cfgBase) push(cfgBase.replace(/\/+$/, "") + "/usages");
+	push(KIMI_USAGE_URL);
+	push("https://api.kimi.ai/coding/v1/usages");
+	return urls;
+}
 const USAGE_REFRESH_MS = 5 * 60 * 1000;
 const USAGE_URI = "kimi-companion://report/Kimi Code Usage.txt";
 const DIAG_URI = "kimi-companion://report/Diagnostics.txt";
 const STATUS_TEXT = "$(kimi-companion-k) Kimi Code";
 const BAR_WIDTH = 16;
 const LIMITS = [
-	{ key: "limit5h", label: "5-hour limit", short: "5h" },
-	{ key: "limit7d", label: "7-day limit", short: "7d" },
-	{ key: "monthTotal", label: "Monthly total", short: "month" },
-	{ key: "monthCode", label: "Monthly (code)", short: "month code" }
+	{ key: "limit5h", label: "5-hour limit", short: "5h", durationMinutes: 300 },
+	{ key: "limit7d", label: "7-day limit", short: "7d", durationMinutes: 7 * 1440 },
+	{ key: "monthTotal", label: "Monthly total", short: "month", durationMinutes: 43829 },
+	{ key: "monthCode", label: "Monthly (code)", short: "month code", durationMinutes: 43829 }
 ];
 
 let statusItem = null;
@@ -213,11 +235,25 @@ async function fetchKimiQuotaDirect() {
 		// Let the Kimi extension refresh the token; the next poll reads the fresh file.
 		return null;
 	}
-	const resp = await fetch(KIMI_USAGE_URL, {
-		headers: { Authorization: `Bearer ${tok.access_token}`, Accept: "application/json" }
-	});
-	if (!resp.ok) return null;
-	return parseDirectQuota(await resp.json());
+	const urls = workingQuotaUrl
+		? [workingQuotaUrl, ...quotaUrlCandidates().filter((u) => u !== workingQuotaUrl)]
+		: quotaUrlCandidates();
+	for (const url of urls) {
+		try {
+			const resp = await fetch(url, {
+				headers: { Authorization: `Bearer ${tok.access_token}`, Accept: "application/json" }
+			});
+			if (!resp.ok) {
+				log.appendLine(`[usage] ${url} -> HTTP ${resp.status}`);
+				continue;
+			}
+			workingQuotaUrl = url;
+			return parseDirectQuota(await resp.json());
+		} catch (err) {
+			log.appendLine(`[usage] ${url} -> ${err}`);
+		}
+	}
+	return null;
 }
 
 function deepseekApiKey() {
@@ -285,11 +321,13 @@ function usageSlots(res) {
 	const windows = res && Array.isArray(res.windows) ? res.windows : [];
 	for (const w of windows) {
 		slots.push({
+			id: `win${w.durationMinutes || 0}`,
 			label: w.label,
 			short: w.short,
 			ratio: w.ratio,
 			resetAt: w.resetAt,
-			counter: `${w.used}/${w.limit}`
+			counter: `${w.used}/${w.limit}`,
+			durationMinutes: w.durationMinutes
 		});
 	}
 	const has5hWindow = windows.some((w) => w.durationMinutes === 300);
@@ -298,9 +336,96 @@ function usageSlots(res) {
 		if (def.key === "limit5h" && has5hWindow) continue; // live 5h counter supersedes the stale backend field
 		const u = usages[def.key];
 		if (!u || typeof u.usedRatio !== "number") continue;
-		slots.push({ label: def.label, short: def.short, ratio: u.usedRatio, resetAt: u.resetAt || null });
+		slots.push({
+			id: def.key,
+			label: def.label,
+			short: def.short,
+			ratio: u.usedRatio,
+			resetAt: u.resetAt || null,
+			durationMinutes: def.durationMinutes
+		});
 	}
 	return slots;
+}
+
+// --- Pace, forecast, alerts -------------------------------------------
+
+function formatDuration(ms) {
+	if (!isFinite(ms) || ms < 0) return null;
+	const m = Math.round(ms / 60000);
+	if (m < 60) return `${m}m`;
+	if (m < 1440) return `${Math.floor(m / 60)}h ${m % 60}m`;
+	return `${Math.floor(m / 1440)}d ${Math.floor((m % 1440) / 60)}h`;
+}
+
+function paceInfo(slot, nowMs) {
+	if (!slot.resetAt || !slot.durationMinutes) return null;
+	const resetMs = new Date(slot.resetAt).getTime();
+	if (isNaN(resetMs)) return null;
+	const windowMs = slot.durationMinutes * 60000;
+	const elapsedMs = nowMs - (resetMs - windowMs);
+	if (elapsedMs <= 0 || elapsedMs >= windowMs) return null;
+	const pace = slot.ratio / (elapsedMs / windowMs); // 1.0 = exactly on track
+	let depletesInMs = null;
+	if (slot.ratio > 0 && slot.ratio < 1) {
+		const t = (1 - slot.ratio) / (slot.ratio / elapsedMs);
+		if (nowMs + t < resetMs) depletesInMs = t;
+	}
+	return { pace, depletesInMs, resetInMs: resetMs - nowMs };
+}
+
+function paceLabel(pace) {
+	return pace >= 1.25 ? "fast" : pace >= 0.8 ? "normal" : pace > 0.01 ? "slow" : "idle";
+}
+
+function paceSummary(slot, nowMs) {
+	const info = paceInfo(slot, nowMs);
+	if (!info) return null;
+	const parts = [`pace ${paceLabel(info.pace)}`];
+	if (info.depletesInMs != null) parts.push(`depletes in ~${formatDuration(info.depletesInMs)}`);
+	else parts.push(`on track (~${Math.min(999, Math.round(info.pace * 100))}% by reset)`);
+	parts.push(`resets in ${formatDuration(info.resetInMs)}`);
+	return { text: parts.join(" · "), hot: info.depletesInMs != null && slot.durationMinutes <= 1440 };
+}
+
+async function checkQuotaAlerts(res) {
+	if (!appContext) return;
+	const cfg = vscode.workspace.getConfiguration("kimiCompanion");
+	if (cfg.get("alerts", true) === false) return;
+	const t5h = Number(cfg.get("alertThreshold5h", 0.8));
+	const tMonth = Number(cfg.get("alertThresholdMonth", 0.9));
+	const dsBelow = Number(cfg.get("alertDeepseekBelowUsd", 1));
+	const latched = appContext.globalState.get(ALERT_LATCH_KEY, {});
+	const now = Date.now();
+	let dirty = false;
+	const fire = (key, windowId, text) => {
+		if (latched[key] === windowId) return;
+		latched[key] = windowId;
+		dirty = true;
+		log.appendLine(`[alert] ${text}`);
+		vscode.window.showWarningMessage(text, "Open usage").then((c) => {
+			if (c) vscode.commands.executeCommand("kimiCompanion.usage");
+		});
+	};
+	for (const s of usageSlots(res)) {
+		const pi = paceInfo(s, now);
+		if ((s.id === "win300" || s.id === "limit5h") && s.ratio >= t5h) {
+			const eta = pi && pi.depletesInMs != null ? ` — depletes in ~${formatDuration(pi.depletesInMs)}` : "";
+			const left = pi ? `, resets in ${formatDuration(pi.resetInMs)}` : "";
+			fire("5h", s.resetAt || "?", `Kimi quota: 5-hour window is ${Math.round(s.ratio * 100)}% used${eta}${left}.`);
+		}
+		if (s.id === "monthTotal" && s.ratio >= tMonth) {
+			fire("month", s.resetAt || "?", `Kimi quota: monthly limit is ${Math.round(s.ratio * 100)}% used (resets ${resetStamp(s.resetAt, true) || "?"}).`);
+		}
+	}
+	const ds = res.deepseek;
+	if (ds && ds.available && ds.total < dsBelow) {
+		fire("deepseek", "low", `DeepSeek balance is low: ${money(ds.total * 100, ds.currency)}.`);
+	} else if (latched.deepseek && ds && ds.total >= dsBelow * 1.5) {
+		delete latched.deepseek;
+		dirty = true;
+	}
+	if (dirty) await appContext.globalState.update(ALERT_LATCH_KEY, latched);
 }
 
 function pad2(n) {
@@ -356,6 +481,8 @@ function usageReport(res) {
 		if (s.counter) line += reset ? `   (${s.counter}, resets ${reset})` : `   (${s.counter})`;
 		else if (reset) line += `   resets ${reset}`;
 		lines.push(line);
+		const ps = paceSummary(s, Date.now());
+		if (ps) lines.push(`${"".padEnd(17)}${ps.text}`);
 	}
 	const extra = extraUsageLines(res);
 	if (extra.length > 0) lines.push("", ...extra);
@@ -388,6 +515,7 @@ function usageErrorReport(res) {
 async function refreshUsageStatus() {
 	const item = statusItem;
 	if (!item) return;
+	item.backgroundColor = undefined;
 	const enabled =
 		vscode.workspace.getConfiguration("kimiCompanion").get("usageInStatusBar", true) !== false;
 	if (!enabled) {
@@ -405,16 +533,24 @@ async function refreshUsageStatus() {
 		const slots = usageSlots(res);
 		const maxRatio = slots.reduce((max, s) => Math.max(max, s.ratio), 0);
 		item.text = `$(kimi-companion-k) ${Math.round(100 * maxRatio)}%`;
+		const now = Date.now();
+		let hot = false;
 		const tip = ["Kimi Code"];
 		for (const s of slots) {
 			const reset = resetStamp(s.resetAt, false);
 			const counter = s.counter ? ` (${s.counter})` : "";
-			tip.push(`${s.short}: ${Math.round(s.ratio * 100)}%${counter}${reset ? ` (reset ${reset})` : ""}`);
+			const ps = paceSummary(s, now);
+			tip.push(
+				`${s.short}: ${Math.round(s.ratio * 100)}%${counter}${reset ? ` (reset ${reset})` : ""}${ps ? ` — ${ps.text}` : ""}`
+			);
+			if (ps && ps.hot) hot = true;
 		}
 		if (res.deepseek) {
 			tip.push(`deepseek: ${money(res.deepseek.total * 100, res.deepseek.currency)}`);
 		}
 		item.tooltip = tip.join("\n");
+		item.backgroundColor = hot ? new vscode.ThemeColor("statusBarItem.errorBackground") : undefined;
+		void checkQuotaAlerts(res);
 	} catch (err) {
 		log.appendLine(`[usage] status refresh failed: ${err}`);
 		item.text = STATUS_TEXT;
@@ -921,6 +1057,7 @@ async function reopenClosed(context) {
 // --- Activation ---------------------------------------------------------
 
 function activate(context) {
+	appContext = context;
 	log = vscode.window.createOutputChannel("Kimi Code Companion");
 	context.subscriptions.push(log);
 	log.appendLine(`[activate] ${new Date().toISOString()}`);

@@ -9,5 +9,9 @@
 	"command.menu.title": "Kimi Code: Menu",
 	"config.restore.description": "Reopen Kimi Code windows after a window reload if they were open before.",
 	"config.statusbar.description": "Show the Kimi Code button in the status bar (right side).",
-	"config.usageStatusbar.description": "Show subscription usage percent in the status bar (updated every 5 minutes)."
+	"config.usageStatusbar.description": "Show subscription usage percent in the status bar (updated every 5 minutes).",
+	"config.alerts.description": "Notify when subscription usage crosses the alert thresholds (once per limit window).",
+	"config.alert5h.description": "Alert threshold for the 5-hour window (fraction 0..1).",
+	"config.alertMonth.description": "Alert threshold for the monthly limit (fraction 0..1).",
+	"config.deepseekBelow.description": "Warn when the DeepSeek balance falls below this amount (USD)."
 }

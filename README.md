@@ -7,10 +7,11 @@ Companion extension for the official **Kimi Code** VS Code extension (`moonshot-
 - **Rename Kimi windows** (`Kimi Code: Rename Window`);
 - **Automatic window titles from the conversation topic** (while a window is still called "Kimi Code", the title is taken from the session's `title`/`lastPrompt`);
 - **`Kimi Code: Reopen Closed Window`** — reopens the last closed Kimi window (remembers up to 5);
-- **`Kimi Code: Usage`** — the current subscription quota (5h / 7d / monthly limits plus the booster wallet) as a separate report, with live rate-window counters (used/limit, e.g. `37/100`);
+- **`Kimi Code: Usage`** — the current subscription quota (5h / 7d / monthly limits plus the booster wallet) as a separate report, with live rate-window counters (used/limit, e.g. `37/100`), pace, depletion forecast and reset countdown;
 - **DeepSeek balance in the Usage report and status bar tooltip** (reads the `[providers.deepseek]` key from the Kimi Code config);
-- **Usage percent in the status bar** — refreshed every 5 minutes (`kimiCompanion.usageInStatusBar`);
-- **Status bar menu** — clicking the button opens a QuickPick: Usage, New window, Reopen closed window, and the list of open windows to focus (the tooltip shows the usage percent and the DeepSeek balance);
+- **Threshold alerts** — native VS Code notifications with a per-window latch: the 5-hour window at ≥ 80%, the monthly limit at ≥ 90%, and the DeepSeek balance below $1 (`kimiCompanion.alerts`, `kimiCompanion.alertThreshold5h`, `kimiCompanion.alertThresholdMonth`, `kimiCompanion.alertDeepseekBelowUsd`);
+- **Usage percent in the status bar** — refreshed every 5 minutes (`kimiCompanion.usageInStatusBar`); the bar turns red when a short window (≤ 1 day) is projected to deplete before its reset;
+- **Status bar menu** — clicking the button opens a QuickPick: Usage, New window, Reopen closed window, and the list of open windows to focus (the tooltip shows the usage percent, the pace and reset countdown, and the DeepSeek balance);
 - **`Ctrl+Alt+K`** (`Cmd+Alt+K` on macOS) — new Kimi window;
 - **`Kimi Code: Diagnostics`** — a state report: versions, all 7 patches, hooks, windows, saved state;
 - Restores the conversation in the Kimi **sidebar** as well.
@@ -68,7 +69,11 @@ Uninstall:
 
 - `kimiCompanion.restoreTabOnStartup` (default `true`) — restore Kimi windows after a reload;
 - `kimiCompanion.statusBarButton` (default `true`) — the status bar button;
-- `kimiCompanion.usageInStatusBar` (default `true`) — show the subscription usage percent in the status bar.
+- `kimiCompanion.usageInStatusBar` (default `true`) — show the subscription usage percent in the status bar;
+- `kimiCompanion.alerts` (default `true`) — native notifications when a usage threshold is crossed (once per limit window);
+- `kimiCompanion.alertThreshold5h` (default `0.8`) — alert threshold for the 5-hour window (fraction `0..1`);
+- `kimiCompanion.alertThresholdMonth` (default `0.9`) — alert threshold for the monthly limit (fraction `0..1`);
+- `kimiCompanion.alertDeepseekBelowUsd` (default `1`) — warn when the DeepSeek balance drops below this amount (USD).
 
 ## Known limitations
 

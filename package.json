@@ -55,6 +55,26 @@
 					"type": "boolean",
 					"default": true,
 					"description": "%config.usageStatusbar.description%"
+				},
+				"kimiCompanion.alerts": {
+					"type": "boolean",
+					"default": true,
+					"description": "%config.alerts.description%"
+				},
+				"kimiCompanion.alertThreshold5h": {
+					"type": "number",
+					"default": 0.8,
+					"description": "%config.alert5h.description%"
+				},
+				"kimiCompanion.alertThresholdMonth": {
+					"type": "number",
+					"default": 0.9,
+					"description": "%config.alertMonth.description%"
+				},
+				"kimiCompanion.alertDeepseekBelowUsd": {
+					"type": "number",
+					"default": 1,
+					"description": "%config.deepseekBelow.description%"
 				}
 			}
 		},

@@ -9,5 +9,9 @@
 	"command.menu.title": "Kimi Code: 菜单",
 	"config.restore.description": "如果之前打开过 Kimi Code 窗口，则在重新加载窗口后自动重新打开它们。",
 	"config.statusbar.description": "在状态栏右侧显示 Kimi Code 按钮。",
-	"config.usageStatusbar.description": "在状态栏显示订阅用量百分比（每 5 分钟更新一次）。"
+	"config.usageStatusbar.description": "在状态栏显示订阅用量百分比（每 5 分钟更新一次）。",
+	"config.alerts.description": "当订阅用量超过告警阈值时通知（每个限制窗口一次）。",
+	"config.alert5h.description": "5 小时窗口的告警阈值（0..1 的小数）。",
+	"config.alertMonth.description": "月度限制的告警阈值（0..1 的小数）。",
+	"config.deepseekBelow.description": "当 DeepSeek 余额低于此金额（美元）时警告。"
 }
