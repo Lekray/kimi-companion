@@ -531,8 +531,12 @@ async function refreshUsageStatus() {
 			return;
 		}
 		const slots = usageSlots(res);
-		const maxRatio = slots.reduce((max, s) => Math.max(max, s.ratio), 0);
-		item.text = `$(kimi-companion-k) ${Math.round(100 * maxRatio)}%`;
+		const monthSlot = slots.find((s) => s.id === "monthTotal");
+		const h5Slot = slots.find((s) => s.id === "win300" || s.id === "limit5h");
+		const parts = [];
+		if (monthSlot) parts.push(`M ${Math.round(monthSlot.ratio * 100)}%`);
+		if (h5Slot) parts.push(`5h ${Math.round(h5Slot.ratio * 100)}%`);
+		item.text = parts.length > 0 ? `$(kimi-companion-k) ${parts.join(" · ")}` : STATUS_TEXT;
 		const now = Date.now();
 		let hot = false;
 		const tip = ["Kimi Code"];
@@ -692,22 +696,110 @@ function showDiagnostics(context) {
 	return showReport(DIAG_URI, diagnosticsReport(context));
 }
 
-// --- Menu -------------------------------------------------------------
+// --- Menu ---------------------------------------------------------------
+
+const STR = {
+	en: {
+		monthly: "Monthly total", monthCode: "Monthly (code)", sevenDay: "7-day limit", fiveHour: "5-hour window",
+		booster: "Booster wallet", deepseek: "DeepSeek balance", used: "used", monthlyUsed: "monthly used",
+		leftFmt: (l, t) => `${l} left of ${t}`,
+		available: "available", unavailable: "unavailable — top-up needed",
+		usageReport: "Usage report", refreshQuota: "Refresh quota", newWindow: "New window",
+		reopenClosed: "Reopen closed window", openWindows: "Open windows",
+		noQuota: "Quota unavailable — open a Kimi window or sign in"
+	},
+	ru: {
+		monthly: "Месячный лимит", monthCode: "Месячный (code)", sevenDay: "7-дневный лимит", fiveHour: "5-часовое окно",
+		booster: "Бустер-кошелёк", deepseek: "Баланс DeepSeek", used: "использовано", monthlyUsed: "за месяц использовано",
+		leftFmt: (l, t) => `осталось ${l} из ${t}`,
+		available: "доступен", unavailable: "недоступен — нужно пополнить",
+		usageReport: "Отчёт по лимитам", refreshQuota: "Обновить лимиты", newWindow: "Новое окно",
+		reopenClosed: "Вернуть закрытое окно", openWindows: "Открытые окна",
+		noQuota: "Квота недоступна — откройте окно Kimi или войдите"
+	},
+	zh: {
+		monthly: "月度限额", monthCode: "月度限额 (code)", sevenDay: "7 天限额", fiveHour: "5 小时窗口",
+		booster: "Booster 钱包", deepseek: "DeepSeek 余额", used: "已用", monthlyUsed: "本月已用",
+		leftFmt: (l, t) => `剩余 ${l}，共 ${t}`,
+		available: "可用", unavailable: "不可用——请充值",
+		usageReport: "用量报告", refreshQuota: "刷新用量", newWindow: "新建窗口",
+		reopenClosed: "重新打开已关闭的窗口", openWindows: "已打开的窗口",
+		noQuota: "配额不可用——请打开 Kimi 窗口或登录"
+	}
+};
+const T = (() => {
+	const lang = (vscode.env.language || "en").toLowerCase();
+	return STR[lang.startsWith("ru") ? "ru" : lang.startsWith("zh") ? "zh" : "en"];
+})();
+
+function slotTitle(s) {
+	if (s.id === "monthTotal") return T.monthly;
+	if (s.id === "monthCode") return T.monthCode;
+	if (s.id === "limit7d") return T.sevenDay;
+	if (s.id === "win300" || s.id === "limit5h") return T.fiveHour;
+	return s.label;
+}
 
 async function showMenu() {
+	const res = await getUsage(false);
 	const items = [];
-	if (typeof globalThis.__kimiCompanionGetUsage === "function") {
-		items.push({ label: "$(graph) Usage…", action: "usage" });
+	if (res && res.kind === "ok") {
+		const order = (s) =>
+			s.id === "monthTotal" ? 0 :
+			s.id === "win300" || s.id === "limit5h" ? 1 :
+			s.id === "limit7d" ? 2 : 3;
+		const sorted = usageSlots(res).slice().sort((a, b) => order(a) - order(b));
+		for (const s of sorted) {
+			const ps = paceSummary(s, Date.now());
+			const counter = s.counter ? ` · ${s.counter}` : "";
+			items.push({
+				label: `$(pulse) ${slotTitle(s)}`,
+				description: `${Math.round(s.ratio * 100)}%`,
+				detail: `[${usageBar(s.ratio)}]  ${Math.round(s.ratio * 100)}% ${T.used}${counter}${ps ? ` · ${ps.text}` : ""}`,
+				action: "usage"
+			});
+		}
+		const extra = res.quota && res.quota.extraUsage ? res.quota.extraUsage : null;
+		if (extra) {
+			items.push({
+				label: `$(pulse) ${T.booster}`,
+				description: money(extra.balanceCents, extra.currency),
+				detail: `${T.leftFmt(money(extra.balanceCents, extra.currency), money(extra.totalCents, extra.currency))} · ${T.monthlyUsed} ${money(extra.monthlyUsedCents, extra.currency)}`,
+				action: "usage"
+			});
+		}
+		const ds = res.deepseek;
+		if (ds) {
+			items.push({
+				label: `$(pulse) ${T.deepseek}`,
+				description: money(ds.total * 100, ds.currency),
+				detail: ds.available ? T.available : T.unavailable,
+				action: "usage"
+			});
+		}
+		items.push({ label: "", kind: vscode.QuickPickItemKind.Separator });
+	} else {
+		items.push({ label: `$(warning) ${T.noQuota}`, action: "usage" });
 	}
-	items.push({ label: "$(add) New window", action: "open" });
-	items.push({ label: "$(history) Reopen closed window", action: "reopen" });
+	items.push({ label: `$(graph) ${T.usageReport}`, action: "usage" });
+	items.push({ label: `$(refresh) ${T.refreshQuota}`, action: "refresh" });
+	items.push({ label: `$(add) ${T.newWindow}`, action: "open" });
+	items.push({ label: `$(history) ${T.reopenClosed}`, action: "reopen" });
 	const panels = getKimiPanels();
-	if (panels.length > 0) items.push({ label: "", kind: vscode.QuickPickItemKind.Separator });
-	panels.forEach((p, i) => items.push({ label: p.title, description: `#${i + 1}`, panel: p }));
-	const picked = await vscode.window.showQuickPick(items, { placeHolder: "Kimi Code" });
+	if (panels.length > 0) {
+		items.push({ label: T.openWindows, kind: vscode.QuickPickItemKind.Separator });
+		panels.forEach((p, i) => items.push({ label: p.title, description: `#${i + 1}`, panel: p }));
+	}
+	const picked = await vscode.window.showQuickPick(items, { title: "Kimi Code" });
 	if (!picked) return;
 	if (picked.panel) {
 		safe(() => picked.panel.reveal());
+		return;
+	}
+	if (picked.action === "refresh") {
+		usageCache = { data: null, at: 0 };
+		await refreshUsageStatus();
+		await showMenu();
 		return;
 	}
 	const command = {

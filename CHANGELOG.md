@@ -5,6 +5,16 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.5.0] - 2026-10-04
+
+### Added
+
+- Copilot-style status bar menu: quota rows with right-side values, usage bars and pace/reset details, actions (Usage report, Refresh quota, New window, Reopen closed window) and open-window focus list; menu is localized to the VS Code UI language (en/ru/zh-cn).
+
+### Changed
+
+- The status bar now shows two values, monthly limit first then the 5-hour window (`M 16% · 5h 82%`), instead of a single max value.
+
 ## [1.4.0] - 2026-10-04
 
 ### Added
@@ -62,6 +72,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Self-healing patches for the Kimi extension.
 - Recommended pinned Kimi extension version.
 
+[1.5.0]: https://github.com/Lekray/kimi-companion/compare/v1.4.0...v1.5.0
 [1.4.0]: https://github.com/Lekray/kimi-companion/compare/v1.3.0...v1.4.0
 [1.3.0]: https://github.com/Lekray/kimi-companion/compare/v1.2.0...v1.3.0
 [1.2.0]: https://github.com/Lekray/kimi-companion/compare/v1.1.0...v1.2.0
