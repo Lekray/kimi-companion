@@ -5,6 +5,12 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.6.1] - 2026-10-05
+
+### Fixed
+
+- The 5-hour limit is read from the official `usages.limit_5h` field again (same source as the CLI `/usage` and the subscription page); the `limits[]` rate-window counter introduced in 1.3.0 is no longer displayed — it reset on its own schedule and kept the status bar "hot" after the quota had reset. The used/limit counters were removed from the usage report.
+
 ## [1.6.0] - 2026-10-04
 
 ### Added
@@ -88,6 +94,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Self-healing patches for the Kimi extension.
 - Recommended pinned Kimi extension version.
 
+[1.6.1]: https://github.com/Lekray/kimi-companion/compare/v1.6.0...v1.6.1
 [1.6.0]: https://github.com/Lekray/kimi-companion/compare/v1.5.1...v1.6.0
 [1.5.1]: https://github.com/Lekray/kimi-companion/compare/v1.5.0...v1.5.1
 [1.5.0]: https://github.com/Lekray/kimi-companion/compare/v1.4.0...v1.5.0

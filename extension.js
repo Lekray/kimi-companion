@@ -153,18 +153,6 @@ function kimiCredentialsFile() {
 	}
 }
 
-function quotaWindowLabel(duration, timeUnit) {
-	const n = Number(duration) || 0;
-	const minutes =
-		timeUnit === "TIME_UNIT_MINUTE" ? n :
-		timeUnit === "TIME_UNIT_HOUR" ? n * 60 :
-		timeUnit === "TIME_UNIT_DAY" ? n * 1440 : 0;
-	if (minutes === 0) return `${duration} ${timeUnit || "window"}`;
-	if (minutes % 1440 === 0) return `${minutes / 1440}-day window`;
-	if (minutes % 60 === 0) return `${minutes / 60}-hour window`;
-	return `${minutes}-minute window`;
-}
-
 const USAGE_KEY_MAP = {
 	limit_5h: "limit5h",
 	limit_7d: "limit7d",
@@ -173,27 +161,9 @@ const USAGE_KEY_MAP = {
 };
 
 function parseDirectQuota(d) {
-	const windows = [];
-	for (const entry of d.limits || []) {
-		const detail = entry && entry.detail ? entry.detail : {};
-		const win = entry && entry.window ? entry.window : {};
-		const limit = Number(detail.limit);
-		const used = Number(detail.used);
-		if (!isFinite(limit) || limit <= 0 || !isFinite(used)) continue;
-		const durationMinutes =
-			win.timeUnit === "TIME_UNIT_MINUTE" ? Number(win.duration) :
-			win.timeUnit === "TIME_UNIT_HOUR" ? Number(win.duration) * 60 :
-			win.timeUnit === "TIME_UNIT_DAY" ? Number(win.duration) * 1440 : 0;
-		windows.push({
-			label: quotaWindowLabel(win.duration, win.timeUnit),
-			short: durationMinutes === 300 ? "5h" : durationMinutes > 0 ? `${durationMinutes}m` : "win",
-			ratio: used / limit,
-			used: detail.used,
-			limit: detail.limit,
-			resetAt: detail.resetTime || null,
-			durationMinutes
-		});
-	}
+	// NOTE: the wire `limits[]` rate-window counters are intentionally ignored —
+	// the official CLI `/usage` and the subscription page read only `usages.*`
+	// (limits[] runs on its own schedule and diverges from the page).
 	const usages = {};
 	const wire = d.usages || {};
 	for (const key of Object.keys(USAGE_KEY_MAP)) {
@@ -219,7 +189,7 @@ function parseDirectQuota(d) {
 				"USD"
 		};
 	}
-	return { kind: "ok", source: "direct", windows, quota: { usages, extraUsage } };
+	return { kind: "ok", source: "direct", quota: { usages, extraUsage } };
 }
 
 async function fetchKimiQuotaDirect() {
@@ -319,22 +289,8 @@ async function getUsage(force) {
 
 function usageSlots(res) {
 	const slots = [];
-	const windows = res && Array.isArray(res.windows) ? res.windows : [];
-	for (const w of windows) {
-		slots.push({
-			id: `win${w.durationMinutes || 0}`,
-			label: w.label,
-			short: w.short,
-			ratio: w.ratio,
-			resetAt: w.resetAt,
-			counter: `${w.used}/${w.limit}`,
-			durationMinutes: w.durationMinutes
-		});
-	}
-	const has5hWindow = windows.some((w) => w.durationMinutes === 300);
 	const usages = res && res.quota && res.quota.usages ? res.quota.usages : {};
 	for (const def of LIMITS) {
-		if (def.key === "limit5h" && has5hWindow) continue; // live 5h counter supersedes the stale backend field
 		const u = usages[def.key];
 		if (!u || typeof u.usedRatio !== "number") continue;
 		slots.push({
