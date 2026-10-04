@@ -7,15 +7,34 @@
 - **переименование окон** Kimi (`Kimi Code: Rename Window`);
 - **автоназвание окон по теме диалога** (пока окно зовётся «Kimi Code» и в нём открыта сессия — берётся `title`/`lastPrompt` из `state.json` сессии);
 - **«Kimi Code: Reopen Closed Window»** — переоткрывает последнее закрытое окно (помнит до 5);
+- **«Kimi Code: Usage»** — текущая квота подписки (лимиты 5 ч / 7 дней / месяц и booster-кошелёк) отдельным отчётом;
+- **процент использования квоты в статус-баре** — обновляется раз в 5 минут (настройка `kimiCompanion.usageInStatusBar`);
+- **меню в статус-баре** — клик по кнопке открывает QuickPick: Usage, New window, Reopen closed window и список открытых окон (фокус по выбору);
+- **`Ctrl+Alt+K`** (`Cmd+Alt+K` на Mac) — новое окно Kimi;
+- **«Kimi Code: Diagnostics»** — отчёт о состоянии: версии, все 7 врезок, хуки, окна, сохранённое состояние;
 - восстановление истории в **сайдбаре** Kimi.
 
 Лог работы: Вид → Вывод → канал **«Kimi Code Companion»**.
+
+## Скриншоты
+
+![Кнопки в заголовке редактора](docs/img/title-buttons.png)
+
+*Кнопки в заголовке редактора*
+
+![Кнопка в статус-баре с процентом использования](docs/img/statusbar.png)
+
+*Кнопка в статус-баре с процентом использования*
+
+![Восстановленные окна с названиями и историей](docs/img/windows.png)
+
+*Восстановленные окна с названиями и историей*
 
 ## Почему нужны врезки в код Kimi
 
 VS Code не даёт одному расширению доступа к webview-панелям другого (ни заголовок сменить, ни сессию узнать). Поэтому компаньон вносит маленькие правки в `dist` расширения Kimi — они регистрируют окна и хуки в `globalThis` (общая область процесса extension host).
 
-## Врезки (6 штук), файл `moonshot-ai.kimi-code-*/dist/`
+## Врезки (7 штук), файл `moonshot-ai.kimi-code-*/dist/`
 
 | # | Файл | Маркер | Что делает |
 |---|------|--------|------------|
@@ -25,6 +44,7 @@ VS Code не даёт одному расширению доступа к webvie
 | 4 | extension.js | `/*__kimiCompanion2__*/` | хуки `__kimiCompanionGetSessionId / GetWebviewId / LoadSession` |
 | 5 | extension.js | `__kimiCompanionGetSidebarId` | хук поиска webviewId сайдбара |
 | 6 | webview.js | `__kimiCompanionLoadSessionInUi` | обработчик события `__kimiCompanionLoadSession` в вебвью — штатный `loadSessionHistory → loadSession` |
+| 7 | extension.js | `__kimiCompanionGetUsage` | хук квоты подписки через `harness.auth.getManagedUsage` |
 
 Оригиналы рядом: `extension.js.bak-kimi-companion`, `webview.js.bak-kimi-companion` (не перезаписывать — это эталон 0.8.1).
 
@@ -43,7 +63,8 @@ VS Code не даёт одному расширению доступа к webvie
 ## Настройки
 
 - `kimiCompanion.restoreTabOnStartup` (по умолчанию `true`) — восстанавливать окна после перезагрузки;
-- `kimiCompanion.statusBarButton` (по умолчанию `true`) — кнопка в статус-баре.
+- `kimiCompanion.statusBarButton` (по умолчанию `true`) — кнопка в статус-баре;
+- `kimiCompanion.usageInStatusBar` (по умолчанию `true`) — показывать процент использования квоты подписки в статус-баре.
 
 ## Грабли, которые уже выловлены
 

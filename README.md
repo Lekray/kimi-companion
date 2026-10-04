@@ -7,15 +7,34 @@ Companion extension for the official **Kimi Code** VS Code extension (`moonshot-
 - **Rename Kimi windows** (`Kimi Code: Rename Window`);
 - **Automatic window titles from the conversation topic** (while a window is still called "Kimi Code", the title is taken from the session's `title`/`lastPrompt`);
 - **`Kimi Code: Reopen Closed Window`** — reopens the last closed Kimi window (remembers up to 5);
+- **`Kimi Code: Usage`** — the current subscription quota (5h / 7d / monthly limits plus the booster wallet) as a separate report;
+- **Usage percent in the status bar** — refreshed every 5 minutes (`kimiCompanion.usageInStatusBar`);
+- **Status bar menu** — clicking the button opens a QuickPick: Usage, New window, Reopen closed window, and the list of open windows to focus;
+- **`Ctrl+Alt+K`** (`Cmd+Alt+K` on macOS) — new Kimi window;
+- **`Kimi Code: Diagnostics`** — a state report: versions, all 7 patches, hooks, windows, saved state;
 - Restores the conversation in the Kimi **sidebar** as well.
 
 Activity log: View → Output → channel **"Kimi Code Companion"**.
+
+## Screenshots
+
+![Editor title bar buttons](docs/img/title-buttons.png)
+
+*Editor title bar buttons*
+
+![Status bar button with usage percent](docs/img/statusbar.png)
+
+*Status bar button with usage percent*
+
+![Restored windows with custom titles and history](docs/img/windows.png)
+
+*Restored windows with custom titles and history*
 
 > **Unofficial project.** Not affiliated with Moonshot AI. "Kimi" and the Kimi logo belong to Moonshot AI. Distributed under the MIT license; the bundled `kimi-icon.svg` comes from the Apache-2.0-licensed Kimi Code extension (see `NOTICE`).
 
 ## How it works (and why it patches the Kimi extension)
 
-VS Code does not let one extension touch another extension's webview panels (neither retitle them nor read their session). So the companion applies six tiny patches to the Kimi extension's `dist` — they register panels and hooks in `globalThis` (the shared extension-host scope):
+VS Code does not let one extension touch another extension's webview panels (neither retitle them nor read their session). So the companion applies seven tiny patches to the Kimi extension's `dist` — they register panels and hooks in `globalThis` (the shared extension-host scope):
 
 | # | File | Marker | Purpose |
 |---|------|--------|---------|
@@ -25,6 +44,7 @@ VS Code does not let one extension touch another extension's webview panels (nei
 | 4 | extension.js | `/*__kimiCompanion2__*/` | hooks `__kimiCompanionGetSessionId / GetWebviewId / LoadSession` |
 | 5 | extension.js | `__kimiCompanionGetSidebarId` | sidebar webview id hook |
 | 6 | webview.js | `__kimiCompanionLoadSessionInUi` | webview handler for `__kimiCompanionLoadSession` — the stock `loadSessionHistory → loadSession` flow |
+| 7 | extension.js | `__kimiCompanionGetUsage` | subscription quota hook via `harness.auth.getManagedUsage` |
 
 Originals are kept next to the patched files: `extension.js.bak-kimi-companion`, `webview.js.bak-kimi-companion`.
 
@@ -46,7 +66,8 @@ Uninstall:
 ## Settings
 
 - `kimiCompanion.restoreTabOnStartup` (default `true`) — restore Kimi windows after a reload;
-- `kimiCompanion.statusBarButton` (default `true`) — the status bar button.
+- `kimiCompanion.statusBarButton` (default `true`) — the status bar button;
+- `kimiCompanion.usageInStatusBar` (default `true`) — show the subscription usage percent in the status bar.
 
 ## Known limitations
 

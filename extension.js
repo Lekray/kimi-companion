@@ -50,6 +50,14 @@ const EXT_UNITS = [
 		old: "\t\t\tglobalThis.__kimiCompanionLoadSession = (webviewId, sessionId) => this.broadcastInternal(\"__kimiCompanionLoadSession\", { sessionId }, webviewId);",
 		repl: "\t\t\tglobalThis.__kimiCompanionLoadSession = (webviewId, sessionId) => this.broadcastInternal(\"__kimiCompanionLoadSession\", { sessionId }, webviewId);\n" +
 			"\t\t\tglobalThis.__kimiCompanionGetSidebarId = () => { for (const id of this.webviews.keys()) if (typeof id === \"string\" && id.startsWith(\"sidebar_\")) return id; return null; };"
+	},
+	{
+		marker: "__kimiCompanionGetUsage",
+		old: "\t\t\tglobalThis.__kimiCompanionGetSidebarId = () => { for (const id of this.webviews.keys()) if (typeof id === \"string\" && id.startsWith(\"sidebar_\")) return id; return null; };",
+		repl: "\t\t\tglobalThis.__kimiCompanionGetSidebarId = () => { for (const id of this.webviews.keys()) if (typeof id === \"string\" && id.startsWith(\"sidebar_\")) return id; return null; };\n" +
+			"\t\t/*__kimiCompanion3__*/ if (!globalThis.__kimiCompanionGetUsage) {\n" +
+			"\t\t\tglobalThis.__kimiCompanionGetUsage = (providerName = \"managed:kimi-code\") => this.bridgeHandler.runtime.harness.auth.getManagedUsage(providerName);\n" +
+			"\t\t}"
 	}
 ];
 const WV_UNITS = [
@@ -84,6 +92,316 @@ function getHooks() {
 		loadSession: globalThis.__kimiCompanionLoadSession,
 		getSidebarId: globalThis.__kimiCompanionGetSidebarId
 	};
+}
+
+// --- Subscription usage (quotas) -------------------------------------
+
+const USAGE_PROVIDER = "managed:kimi-code";
+const USAGE_CACHE_MS = 60000;
+const USAGE_REFRESH_MS = 5 * 60 * 1000;
+const USAGE_URI = "kimi-companion://report/Kimi Code Usage.txt";
+const DIAG_URI = "kimi-companion://report/Diagnostics.txt";
+const STATUS_TEXT = "$(kimi-companion-k) Kimi Code";
+const BAR_WIDTH = 16;
+const LIMITS = [
+	{ key: "limit5h", label: "5-hour limit", short: "5h" },
+	{ key: "limit7d", label: "7-day limit", short: "7d" },
+	{ key: "monthTotal", label: "Monthly total", short: "month" },
+	{ key: "monthCode", label: "Monthly (code)", short: "month code" }
+];
+
+let statusItem = null;
+let reportProvider = null;
+let usageCache = { data: null, at: 0 };
+
+async function getUsage(force) {
+	const fn = globalThis.__kimiCompanionGetUsage;
+	if (typeof fn !== "function") return null;
+	if (!force && usageCache.data && Date.now() - usageCache.at < USAGE_CACHE_MS) return usageCache.data;
+	let res;
+	try {
+		res = await fn(USAGE_PROVIDER);
+	} catch (err) {
+		log.appendLine(`[usage] hook threw: ${err}`);
+		return null;
+	}
+	if (res && res.kind === "ok") usageCache = { data: res, at: Date.now() };
+	return res;
+}
+
+function usageSlots(res) {
+	const usages = res && res.quota && res.quota.usages ? res.quota.usages : {};
+	const slots = [];
+	for (const def of LIMITS) {
+		const u = usages[def.key];
+		if (!u || typeof u.usedRatio !== "number") continue;
+		slots.push({ label: def.label, short: def.short, ratio: u.usedRatio, resetAt: u.resetAt || null });
+	}
+	return slots;
+}
+
+function pad2(n) {
+	return String(n).padStart(2, "0");
+}
+
+function localStamp(d) {
+	return (
+		`${pad2(d.getDate())}.${pad2(d.getMonth() + 1)}.${d.getFullYear()} ` +
+		`${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}`
+	);
+}
+
+function resetStamp(iso, withDate) {
+	if (!iso) return null;
+	const d = new Date(iso);
+	if (isNaN(d.getTime())) return null;
+	const time = `${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+	return withDate ? `${pad2(d.getDate())}.${pad2(d.getMonth() + 1)} ${time}` : time;
+}
+
+function usageBar(ratio) {
+	const filled = Math.max(0, Math.min(BAR_WIDTH, Math.round(ratio * BAR_WIDTH)));
+	return "█".repeat(filled) + "░".repeat(BAR_WIDTH - filled);
+}
+
+function money(cents, currency) {
+	const value = (Number(cents) || 0) / 100;
+	const sym = !currency || currency === "USD" ? "$" : currency === "RUB" ? "₽" : `${currency} `;
+	return `${sym}${value.toFixed(2)}`;
+}
+
+function extraUsageLines(res) {
+	const extra = res && res.quota ? res.quota.extraUsage : null;
+	if (!extra) return [];
+	const cur = extra.currency;
+	const left = money(extra.balanceCents, cur);
+	const total = money(extra.totalCents, cur);
+	const used = money(extra.monthlyUsedCents, cur);
+	const tail = extra.monthlyChargeLimitEnabled
+		? `(monthly used ${used} of ${money(extra.monthlyChargeLimitCents, cur)} limit)`
+		: `(monthly used ${used}, no monthly limit)`;
+	return [`Booster wallet: ${left} left of ${total} ${tail}`];
+}
+
+function usageReport(res) {
+	const lines = ["Kimi Code subscription usage (api.kimi.com)", `Updated: ${localStamp(new Date())}`, ""];
+	const slots = usageSlots(res);
+	if (slots.length === 0) lines.push("The response contains no limit data.");
+	for (const s of slots) {
+		const reset = resetStamp(s.resetAt, true);
+		lines.push(
+			`${s.label.padEnd(15)}[${usageBar(s.ratio)}]  ${Math.round(s.ratio * 100)}%` +
+				(reset ? `   resets ${reset}` : "")
+		);
+	}
+	const extra = extraUsageLines(res);
+	if (extra.length > 0) lines.push("", ...extra);
+	return lines.join("\n") + "\n";
+}
+
+function usageErrorReport(res) {
+	const lines = ["Kimi Code subscription usage (api.kimi.com)", `Updated: ${localStamp(new Date())}`, ""];
+	if (!res) {
+		lines.push("Usage is unavailable: the hook __kimiCompanionGetUsage is not present.");
+		lines.push("The Kimi extension has not been activated or patched yet — reload the window and open a Kimi window.");
+	} else {
+		const msg = res.error || res.message || res.reason;
+		lines.push(`Usage request failed: ${typeof msg === "string" ? msg : JSON.stringify(res)}`);
+	}
+	return lines.join("\n") + "\n";
+}
+
+async function refreshUsageStatus() {
+	const item = statusItem;
+	if (!item) return;
+	const enabled =
+		vscode.workspace.getConfiguration("kimiCompanion").get("usageInStatusBar", true) !== false;
+	if (!enabled) {
+		item.text = STATUS_TEXT;
+		item.tooltip = "Kimi Code";
+		return;
+	}
+	try {
+		const res = await getUsage(false);
+		if (!res || res.kind !== "ok") {
+			item.text = STATUS_TEXT;
+			item.tooltip = "Kimi Code";
+			return;
+		}
+		const slots = usageSlots(res);
+		const maxRatio = slots.reduce((max, s) => Math.max(max, s.ratio), 0);
+		item.text = `$(kimi-companion-k) ${Math.round(100 * maxRatio)}%`;
+		const tip = ["Kimi Code"];
+		for (const s of slots) {
+			const reset = resetStamp(s.resetAt, false);
+			tip.push(`${s.short}: ${Math.round(s.ratio * 100)}%${reset ? ` (reset ${reset})` : ""}`);
+		}
+		item.tooltip = tip.join("\n");
+	} catch (err) {
+		log.appendLine(`[usage] status refresh failed: ${err}`);
+		item.text = STATUS_TEXT;
+		item.tooltip = "Kimi Code";
+	}
+}
+
+// --- Virtual report documents ----------------------------------------
+
+class ReportProvider {
+	constructor() {
+		this.emitter = new vscode.EventEmitter();
+		this.onDidChange = this.emitter.event;
+		this.docs = new Map();
+	}
+	provideTextDocumentContent(uri) {
+		return this.docs.get(uri.toString()) || "";
+	}
+	show(uri, text) {
+		const target = typeof uri === "string" ? vscode.Uri.parse(uri) : uri;
+		this.docs.set(target.toString(), text);
+		this.emitter.fire(target);
+		return vscode.window.showTextDocument(target, {
+			preview: false,
+			viewColumn: vscode.ViewColumn.Beside
+		});
+	}
+	dispose() {
+		this.emitter.dispose();
+	}
+}
+
+function showReport(uri, text) {
+	if (!reportProvider) return Promise.resolve(undefined);
+	return reportProvider.show(uri, text).then(
+		() => undefined,
+		(err) => {
+			log.appendLine(`[report] cannot open ${uri}: ${err}`);
+			return undefined;
+		}
+	);
+}
+
+async function showUsage() {
+	const res = await getUsage(true);
+	return showReport(USAGE_URI, res && res.kind === "ok" ? usageReport(res) : usageErrorReport(res));
+}
+
+// --- Diagnostics ------------------------------------------------------
+
+function distDir() {
+	const ext = vscode.extensions.getExtension(KIMI_EXT_ID);
+	return ext ? path.join(ext.extensionUri.fsPath, "dist") : null;
+}
+
+function unitStatus(file, unit) {
+	try {
+		return fs.readFileSync(file, "utf8").includes(unit.marker)
+			? `OK      ${unit.marker}`
+			: `MISSING ${unit.marker}`;
+	} catch {
+		return `MISSING ${unit.marker} (cannot read ${path.basename(file)})`;
+	}
+}
+
+function pinnedStatus() {
+	try {
+		const file = path.join(os.homedir(), ".vscode", "extensions", "extensions.json");
+		if (!fs.existsSync(file)) return "extensions.json not found";
+		const list = JSON.parse(fs.readFileSync(file, "utf8"));
+		const rec = Array.isArray(list)
+			? list.find((e) => e && e.identifier && e.identifier.id === KIMI_EXT_ID)
+			: null;
+		if (!rec) return `no record for ${KIMI_EXT_ID}`;
+		const pinned = rec.metadata ? rec.metadata.pinned : undefined;
+		return pinned ? "yes" : "no";
+	} catch (err) {
+		return `unknown (${err})`;
+	}
+}
+
+function hookStatus() {
+	const names = [
+		"__kimiCompanionPanels",
+		"__kimiCompanionGetSessionId",
+		"__kimiCompanionGetWebviewId",
+		"__kimiCompanionLoadSession",
+		"__kimiCompanionGetSidebarId",
+		"__kimiCompanionGetUsage"
+	];
+	return names.map((n) => `${n}: ${typeof globalThis[n]}`);
+}
+
+function diagnosticsReport(context) {
+	const kimiExt = vscode.extensions.getExtension(KIMI_EXT_ID);
+	const dir = distDir();
+	const lines = [
+		"Kimi Code Companion — diagnostics",
+		`Updated: ${localStamp(new Date())}`,
+		"",
+		"Versions",
+		`  companion:            ${context.extension.packageJSON.version}`,
+		`  moonshot-ai.kimi-code: ${kimiExt ? kimiExt.packageJSON.version : "not installed"}`,
+		`  pinned in extensions.json: ${pinnedStatus()}`,
+		"",
+		"Patch units"
+	];
+	if (!dir) {
+		lines.push("  the Kimi extension is not installed — dist not checked");
+	} else {
+		for (const unit of EXT_UNITS) lines.push(`  ${unitStatus(path.join(dir, "extension.js"), unit)}`);
+		for (const unit of WV_UNITS) lines.push(`  ${unitStatus(path.join(dir, "webview.js"), unit)}`);
+	}
+	lines.push("", "Hooks in globalThis");
+	for (const line of hookStatus()) lines.push(`  ${line}`);
+	lines.push("", "Tracked windows");
+	const entries = currentEntries();
+	if (entries.length === 0) {
+		lines.push("  none");
+	} else {
+		entries.forEach((e, i) => {
+			lines.push(
+				`  #${i + 1} "${e.title}" session=${e.sessionId || "-"} column=${e.column === null ? "-" : e.column}`
+			);
+		});
+	}
+	const sidebar = context.workspaceState.get(SIDEBAR_KEY, null);
+	lines.push("", `Saved sidebar session: ${sidebar || "-"}`);
+	const closed = context.workspaceState.get(CLOSED_KEY, []);
+	lines.push(`Closed history (${closed.length}):`);
+	for (const e of closed) lines.push(`  "${e.title}" session=${e.sessionId || "-"}`);
+	lines.push("", `Kimi home: ${kimiHome}`);
+	const index = path.join(kimiHome, "session_index.jsonl");
+	lines.push(`session_index.jsonl: ${fs.existsSync(index) ? "found" : "missing"}`);
+	return lines.join("\n") + "\n";
+}
+
+function showDiagnostics(context) {
+	return showReport(DIAG_URI, diagnosticsReport(context));
+}
+
+// --- Menu -------------------------------------------------------------
+
+async function showMenu() {
+	const items = [];
+	if (typeof globalThis.__kimiCompanionGetUsage === "function") {
+		items.push({ label: "$(graph) Usage…", action: "usage" });
+	}
+	items.push({ label: "$(add) New window", action: "open" });
+	items.push({ label: "$(history) Reopen closed window", action: "reopen" });
+	const panels = getKimiPanels();
+	if (panels.length > 0) items.push({ label: "", kind: vscode.QuickPickItemKind.Separator });
+	panels.forEach((p, i) => items.push({ label: p.title, description: `#${i + 1}`, panel: p }));
+	const picked = await vscode.window.showQuickPick(items, { placeHolder: "Kimi Code" });
+	if (!picked) return;
+	if (picked.panel) {
+		safe(() => picked.panel.reveal());
+		return;
+	}
+	const command = {
+		usage: "kimiCompanion.usage",
+		open: "kimiCompanion.open",
+		reopen: "kimiCompanion.reopenClosed"
+	}[picked.action];
+	if (command) await vscode.commands.executeCommand(command);
 }
 
 function getKimiPanels() {
@@ -455,6 +773,12 @@ function activate(context) {
 		void restoreSidebarSession(context, sidebarSession);
 	}
 
+	reportProvider = new ReportProvider();
+	context.subscriptions.push(
+		reportProvider,
+		vscode.workspace.registerTextDocumentContentProvider("kimi-companion", reportProvider)
+	);
+
 	context.subscriptions.push(
 		vscode.window.tabGroups.onDidChangeTabs(() => reconcile(context, "tabsChanged")),
 		vscode.commands.registerCommand("kimiCompanion.open", () => {
@@ -465,6 +789,15 @@ function activate(context) {
 		}),
 		vscode.commands.registerCommand("kimiCompanion.reopenClosed", () => {
 			void reopenClosed(context);
+		}),
+		vscode.commands.registerCommand("kimiCompanion.usage", () => {
+			void showUsage();
+		}),
+		vscode.commands.registerCommand("kimiCompanion.diagnostics", () => {
+			void showDiagnostics(context);
+		}),
+		vscode.commands.registerCommand("kimiCompanion.menu", () => {
+			void showMenu();
 		})
 	);
 
@@ -472,10 +805,17 @@ function activate(context) {
 	context.subscriptions.push({ dispose: () => clearInterval(pollTimer) });
 
 	const item = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 0);
-	item.text = "$(kimi-companion-k) Kimi Code";
-	item.tooltip = "Kimi Code: Open";
-	item.command = "kimiCompanion.open";
+	item.text = STATUS_TEXT;
+	item.tooltip = "Kimi Code";
+	item.command = "kimiCompanion.menu";
+	statusItem = item;
 	context.subscriptions.push(item);
+
+	const usageTimer = setInterval(() => {
+		void refreshUsageStatus();
+	}, USAGE_REFRESH_MS);
+	context.subscriptions.push({ dispose: () => clearInterval(usageTimer) });
+	void refreshUsageStatus();
 
 	const updateButton = () => {
 		const enabled = vscode.workspace
@@ -492,6 +832,9 @@ function activate(context) {
 		vscode.workspace.onDidChangeConfiguration((e) => {
 			if (e.affectsConfiguration("kimiCompanion.statusBarButton")) {
 				updateButton();
+			}
+			if (e.affectsConfiguration("kimiCompanion.usageInStatusBar")) {
+				void refreshUsageStatus();
 			}
 		})
 	);

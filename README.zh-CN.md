@@ -7,15 +7,34 @@
 - **重命名 Kimi 窗口**（`Kimi Code: Rename Window`）；
 - **根据对话主题自动命名窗口**（当窗口仍叫「Kimi Code」时，自动取会话的 `title`/`lastPrompt` 作为标题）；
 - **`Kimi Code: Reopen Closed Window`**——重新打开最近关闭的 Kimi 窗口（最多记住 5 个）；
+- **`Kimi Code: Usage`**——以单独的报告显示当前订阅额度（5 小时 / 7 天 / 每月限额以及 booster 钱包）；
+- **状态栏显示用量百分比**——每 5 分钟刷新一次（设置项 `kimiCompanion.usageInStatusBar`）；
+- **状态栏菜单**——点击状态栏按钮打开 QuickPick：Usage、New window、Reopen closed window，以及已打开窗口列表（选中即聚焦）；
+- **`Ctrl+Alt+K`**（macOS 为 `Cmd+Alt+K`）——新建 Kimi 窗口；
+- **`Kimi Code: Diagnostics`**——状态报告：版本、全部 7 处补丁、钩子、窗口、已保存的状态；
 - 同时恢复 Kimi **侧边栏**中的对话。
 
 运行日志：视图 → 输出 → 通道 **「Kimi Code Companion」**。
+
+## 截图
+
+![编辑器标题栏按钮](docs/img/title-buttons.png)
+
+*编辑器标题栏按钮*
+
+![状态栏按钮与用量百分比](docs/img/statusbar.png)
+
+*状态栏按钮与用量百分比*
+
+![恢复后的窗口（自定义标题与历史记录）](docs/img/windows.png)
+
+*恢复后的窗口（自定义标题与历史记录）*
 
 > **非官方项目。** 与 Moonshot AI 没有任何隶属关系。「Kimi」及 Kimi 标志为 Moonshot AI 的商标。本项目以 MIT 许可证分发；内置的 `kimi-icon.svg` 来自采用 Apache-2.0 许可证的 Kimi Code 扩展（见 `NOTICE`）。
 
 ## 工作原理（为什么要给 Kimi 扩展打补丁）
 
-VS Code 不允许一个扩展访问另一个扩展的 webview 面板（既不能改标题，也不能读取会话）。因此伴侣扩展会对 Kimi 扩展的 `dist` 目录做六处极小的补丁，把面板和钩子注册到 `globalThis`（扩展宿主进程的共享作用域）：
+VS Code 不允许一个扩展访问另一个扩展的 webview 面板（既不能改标题，也不能读取会话）。因此伴侣扩展会对 Kimi 扩展的 `dist` 目录做七处极小的补丁，把面板和钩子注册到 `globalThis`（扩展宿主进程的共享作用域）：
 
 | # | 文件 | 标记 | 作用 |
 |---|------|------|------|
@@ -25,6 +44,7 @@ VS Code 不允许一个扩展访问另一个扩展的 webview 面板（既不能
 | 4 | extension.js | `/*__kimiCompanion2__*/` | 钩子 `__kimiCompanionGetSessionId / GetWebviewId / LoadSession` |
 | 5 | extension.js | `__kimiCompanionGetSidebarId` | 侧边栏 webview id 钩子 |
 | 6 | webview.js | `__kimiCompanionLoadSessionInUi` | webview 端处理 `__kimiCompanionLoadSession` 事件——走原生 `loadSessionHistory → loadSession` 流程 |
+| 7 | extension.js | `__kimiCompanionGetUsage` | 通过 `harness.auth.getManagedUsage` 获取订阅额度的钩子 |
 
 原始文件保留在旁：`extension.js.bak-kimi-companion`、`webview.js.bak-kimi-companion`。
 
@@ -46,7 +66,8 @@ VS Code 不允许一个扩展访问另一个扩展的 webview 面板（既不能
 ## 设置项
 
 - `kimiCompanion.restoreTabOnStartup`（默认 `true`）——重载后恢复 Kimi 窗口；
-- `kimiCompanion.statusBarButton`（默认 `true`）——状态栏按钮。
+- `kimiCompanion.statusBarButton`（默认 `true`）——状态栏按钮；
+- `kimiCompanion.usageInStatusBar`（默认 `true`）——在状态栏显示订阅额度用量百分比。
 
 ## 已知限制
 

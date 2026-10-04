@@ -4,6 +4,10 @@
 	"command.open.title": "Kimi Code: Открыть",
 	"command.rename.title": "Kimi Code: Переименовать окно",
 	"command.reopen.title": "Kimi Code: Вернуть закрытое окно",
+	"command.usage.title": "Kimi Code: Лимиты",
+	"command.diagnostics.title": "Kimi Code: Диагностика",
+	"command.menu.title": "Kimi Code: Меню",
 	"config.restore.description": "Переоткрывать окна Kimi Code после перезагрузки окна, если они были открыты.",
-	"config.statusbar.description": "Показывать кнопку Kimi Code в статус-баре (справа)."
+	"config.statusbar.description": "Показывать кнопку Kimi Code в статус-баре (справа).",
+	"config.usageStatusbar.description": "Показывать процент использования лимита подписки в статус-баре (обновление каждые 5 минут)."
 }

@@ -3,7 +3,7 @@
 	"publisher": "lekra",
 	"displayName": "%displayName%",
 	"description": "%description%",
-	"version": "1.1.0",
+	"version": "1.2.0",
 	"license": "MIT",
 	"engines": {
 		"vscode": "^1.100.0"
@@ -50,6 +50,11 @@
 					"type": "boolean",
 					"default": true,
 					"description": "%config.statusbar.description%"
+				},
+				"kimiCompanion.usageInStatusBar": {
+					"type": "boolean",
+					"default": true,
+					"description": "%config.usageStatusbar.description%"
 				}
 			}
 		},
@@ -71,6 +76,20 @@
 				"command": "kimiCompanion.reopenClosed",
 				"title": "%command.reopen.title%",
 				"icon": "$(history)"
+			},
+			{
+				"command": "kimiCompanion.usage",
+				"title": "%command.usage.title%",
+				"icon": "$(graph)"
+			},
+			{
+				"command": "kimiCompanion.diagnostics",
+				"title": "%command.diagnostics.title%",
+				"icon": "$(pulse)"
+			},
+			{
+				"command": "kimiCompanion.menu",
+				"title": "%command.menu.title%"
 			}
 		],
 		"menus": {
@@ -83,7 +102,20 @@
 					"command": "kimiCompanion.rename",
 					"group": "navigation"
 				}
+			],
+			"commandPalette": [
+				{
+					"command": "kimiCompanion.menu",
+					"when": "false"
+				}
 			]
-		}
+		},
+		"keybindings": [
+			{
+				"command": "kimiCompanion.open",
+				"key": "ctrl+alt+k",
+				"mac": "cmd+alt+k"
+			}
+		]
 	}
 }
