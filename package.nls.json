@@ -1,0 +1,9 @@
+{
+	"displayName": "Kimi Code Companion",
+	"description": "Reopens Kimi Code windows after a window reload — with their titles, editor layout and conversation history. Adds Kimi Code buttons (open, rename) to the editor title bar and the status bar.",
+	"command.open.title": "Kimi Code: Open",
+	"command.rename.title": "Kimi Code: Rename Window",
+	"command.reopen.title": "Kimi Code: Reopen Closed Window",
+	"config.restore.description": "Reopen Kimi Code windows after a window reload if they were open before.",
+	"config.statusbar.description": "Show the Kimi Code button in the status bar (right side)."
+}

@@ -1,0 +1,9 @@
+{
+	"displayName": "Kimi Code Companion",
+	"description": "在窗口重新加载后恢复 Kimi Code 窗口——包括窗口标题、编辑器布局和对话历史记录。在编辑器标题栏和状态栏中添加 Kimi Code 按钮（打开、重命名）。",
+	"command.open.title": "Kimi Code: 打开",
+	"command.rename.title": "Kimi Code: 重命名窗口",
+	"command.reopen.title": "Kimi Code: 重新打开已关闭的窗口",
+	"config.restore.description": "如果之前打开过 Kimi Code 窗口，则在重新加载窗口后自动重新打开它们。",
+	"config.statusbar.description": "在状态栏右侧显示 Kimi Code 按钮。"
+}

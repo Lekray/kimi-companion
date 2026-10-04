@@ -1,0 +1,89 @@
+{
+	"name": "kimi-companion",
+	"publisher": "lekra",
+	"displayName": "%displayName%",
+	"description": "%description%",
+	"version": "1.1.0",
+	"license": "MIT",
+	"engines": {
+		"vscode": "^1.100.0"
+	},
+	"categories": [
+		"AI",
+		"Other"
+	],
+	"keywords": [
+		"kimi",
+		"kimi-code",
+		"moonshot",
+		"ai",
+		"assistant"
+	],
+	"galleryBanner": {
+		"color": "#0B0B0D",
+		"theme": "dark"
+	},
+	"activationEvents": [
+		"onStartupFinished"
+	],
+	"main": "./extension.js",
+	"icon": "resources/icon.png",
+	"contributes": {
+		"icons": {
+			"kimi-companion-k": {
+				"description": "Kimi",
+				"default": {
+					"fontPath": "./resources/kimi.woff",
+					"fontCharacter": "\\E001"
+				}
+			}
+		},
+		"configuration": {
+			"title": "%displayName%",
+			"properties": {
+				"kimiCompanion.restoreTabOnStartup": {
+					"type": "boolean",
+					"default": true,
+					"description": "%config.restore.description%"
+				},
+				"kimiCompanion.statusBarButton": {
+					"type": "boolean",
+					"default": true,
+					"description": "%config.statusbar.description%"
+				}
+			}
+		},
+		"commands": [
+			{
+				"command": "kimiCompanion.open",
+				"title": "%command.open.title%",
+				"icon": {
+					"light": "resources/kimi-icon.svg",
+					"dark": "resources/kimi-icon.svg"
+				}
+			},
+			{
+				"command": "kimiCompanion.rename",
+				"title": "%command.rename.title%",
+				"icon": "$(pencil)"
+			},
+			{
+				"command": "kimiCompanion.reopenClosed",
+				"title": "%command.reopen.title%",
+				"icon": "$(history)"
+			}
+		],
+		"menus": {
+			"editor/title": [
+				{
+					"command": "kimiCompanion.open",
+					"group": "navigation"
+				},
+				{
+					"command": "kimiCompanion.rename",
+					"group": "navigation"
+				}
+			]
+		}
+	}
+}

@@ -1,0 +1,55 @@
+# Kimi Code Companion
+
+Companion extension for the official **Kimi Code** VS Code extension (`moonshot-ai.kimi-code`). It adds the quality-of-life features the stock extension lacks:
+
+- **Restores Kimi windows after "Developer: Reload Window"** — with their custom titles, editor column, and **conversation history**;
+- **Buttons**: a Kimi icon in the editor title bar (new window), a pencil next to it (rename window), and a "K Kimi Code" button on the right side of the status bar;
+- **Rename Kimi windows** (`Kimi Code: Rename Window`);
+- **Automatic window titles from the conversation topic** (while a window is still called "Kimi Code", the title is taken from the session's `title`/`lastPrompt`);
+- **`Kimi Code: Reopen Closed Window`** — reopens the last closed Kimi window (remembers up to 5);
+- Restores the conversation in the Kimi **sidebar** as well.
+
+Activity log: View → Output → channel **"Kimi Code Companion"**.
+
+> **Unofficial project.** Not affiliated with Moonshot AI. "Kimi" and the Kimi logo belong to Moonshot AI. Distributed under the MIT license; the bundled `kimi-icon.svg` comes from the Apache-2.0-licensed Kimi Code extension (see `NOTICE`).
+
+## How it works (and why it patches the Kimi extension)
+
+VS Code does not let one extension touch another extension's webview panels (neither retitle them nor read their session). So the companion applies six tiny patches to the Kimi extension's `dist` — they register panels and hooks in `globalThis` (the shared extension-host scope):
+
+| # | File | Marker | Purpose |
+|---|------|--------|---------|
+| 1 | extension.js | `__kimiCompanionNextTitle` | new tab title is taken from `globalThis.__kimiCompanionNextTitle` |
+| 2 | extension.js | `/*__kimiCompanion__*/` | created panels are tracked in `globalThis.__kimiCompanionPanels` |
+| 3 | extension.js | `__kimiCompanionNextColumn` | new tab column from `globalThis.__kimiCompanionNextColumn` |
+| 4 | extension.js | `/*__kimiCompanion2__*/` | hooks `__kimiCompanionGetSessionId / GetWebviewId / LoadSession` |
+| 5 | extension.js | `__kimiCompanionGetSidebarId` | sidebar webview id hook |
+| 6 | webview.js | `__kimiCompanionLoadSessionInUi` | webview handler for `__kimiCompanionLoadSession` — the stock `loadSessionHistory → loadSession` flow |
+
+Originals are kept next to the patched files: `extension.js.bak-kimi-companion`, `webview.js.bak-kimi-companion`.
+
+**Self-healing:** on every activation the companion verifies all markers and re-applies what's missing (e.g. after a Kimi update), then offers a reload. If an anchor can't be found in a new Kimi version, you get a warning listing the missing markers — the patch table above is the repair guide.
+
+## Pin your Kimi extension version (recommended)
+
+To keep the patches from being wiped by a random auto-update, pin `moonshot-ai.kimi-code` (Extensions view → right-click the extension → **Pin** / disable auto-update for it). Update consciously, then let the companion re-patch and reload.
+
+## Install / uninstall
+
+Install: `code --install-extension kimi-companion-1.1.0.vsix`, then reload the window (the first activation patches the Kimi extension and offers one more reload).
+
+Uninstall:
+1. Remove this extension.
+2. Restore the originals: `extension.js.bak-kimi-companion → extension.js`, `webview.js.bak-kimi-companion → webview.js` in the Kimi extension's `dist` (or reinstall Kimi Code from the Marketplace).
+3. Reload the window.
+
+## Settings
+
+- `kimiCompanion.restoreTabOnStartup` (default `true`) — restore Kimi windows after a reload;
+- `kimiCompanion.statusBarButton` (default `true`) — the status bar button.
+
+## Known limitations
+
+- History is restored in tab windows and in the sidebar; a window that had a brand-new empty conversation restores empty (titled).
+- If a conversation was deleted from the session list, its window restores empty.
+- Status bar icons are single-color (VS Code limitation), so the blue dot of the "K" mark is monochrome there.

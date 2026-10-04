@@ -1,0 +1,9 @@
+{
+	"displayName": "Kimi Code Companion",
+	"description": "Восстанавливает окна Kimi Code после перезагрузки окна — с названиями, раскладкой редактора и историей диалогов. Добавляет кнопки Kimi Code (открыть, переименовать) в заголовок редактора и в статус-бар.",
+	"command.open.title": "Kimi Code: Открыть",
+	"command.rename.title": "Kimi Code: Переименовать окно",
+	"command.reopen.title": "Kimi Code: Вернуть закрытое окно",
+	"config.restore.description": "Переоткрывать окна Kimi Code после перезагрузки окна, если они были открыты.",
+	"config.statusbar.description": "Показывать кнопку Kimi Code в статус-баре (справа)."
+}
