@@ -11,7 +11,7 @@
 - **Usage 报告与状态栏悬停提示中的 DeepSeek 余额**（读取 Kimi Code 配置中的 `[providers.deepseek]` 键）；
 - **阈值告警**——带「每个窗口只触发一次」闩锁的原生 VS Code 通知：5 小时窗口 ≥ 80%、月度限额 ≥ 90%、DeepSeek 余额低于 $1（设置项 `kimiCompanion.alerts`、`kimiCompanion.alertThreshold5h`、`kimiCompanion.alertThresholdMonth`、`kimiCompanion.alertDeepseekBelowUsd`）；
 - **状态栏显示用量**——两个数值：先显示月度限额，再显示 5 小时窗口（例如 `M 16% · 5h 82%`），每 5 分钟刷新一次（设置项 `kimiCompanion.usageInStatusBar`）；当短窗口（≤ 1 天）按当前速度会在重置前耗尽时，状态栏变为红色；
-- **Copilot 风格的状态栏菜单**——点击状态栏按钮打开扩展菜单：额度行（数值显示在右侧），下面是用量条与详细信息（计数器、消耗速度、距重置倒计时），然后是操作项（用量报告、刷新用量、新建窗口、重新打开已关闭的窗口），最后是已打开窗口的聚焦列表；「刷新用量」会重新获取数据并再次打开菜单；菜单按 VS Code 界面语言本地化（en / ru / zh-cn，消耗速度相关短语仍为英文）；
+- **Copilot 风格的状态栏菜单**——点击状态栏按钮打开扩展菜单：额度行（数值显示在右侧），下面是用量条与详细信息（计数器、消耗速度、距重置倒计时），然后是操作项（刷新用量、新建窗口、重新打开已关闭的窗口），最后是已打开窗口的聚焦列表；额度行为信息展示——点击只会关闭菜单，不会打开单独的用量报告（`Kimi Code: Usage` 报告仍可从命令面板打开）；「刷新用量」会重新获取数据并再次打开菜单；菜单按 VS Code 界面语言本地化（en / ru / zh-cn，消耗速度相关短语仍为英文）；
 - **`Ctrl+Alt+K`**（macOS 为 `Cmd+Alt+K`）——新建 Kimi 窗口；
 - **`Kimi Code: Diagnostics`**——状态报告：版本、全部 7 处补丁、钩子、窗口、已保存的状态；
 - 同时恢复 Kimi **侧边栏**中的对话。

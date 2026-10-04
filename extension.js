@@ -704,7 +704,7 @@ const STR = {
 		booster: "Booster wallet", deepseek: "DeepSeek balance", used: "used", monthlyUsed: "monthly used",
 		leftFmt: (l, t) => `${l} left of ${t}`,
 		available: "available", unavailable: "unavailable — top-up needed",
-		usageReport: "Usage report", refreshQuota: "Refresh quota", newWindow: "New window",
+		refreshQuota: "Refresh quota", newWindow: "New window",
 		reopenClosed: "Reopen closed window", openWindows: "Open windows",
 		noQuota: "Quota unavailable — open a Kimi window or sign in"
 	},
@@ -713,7 +713,7 @@ const STR = {
 		booster: "Бустер-кошелёк", deepseek: "Баланс DeepSeek", used: "использовано", monthlyUsed: "за месяц использовано",
 		leftFmt: (l, t) => `осталось ${l} из ${t}`,
 		available: "доступен", unavailable: "недоступен — нужно пополнить",
-		usageReport: "Отчёт по лимитам", refreshQuota: "Обновить лимиты", newWindow: "Новое окно",
+		refreshQuota: "Обновить лимиты", newWindow: "Новое окно",
 		reopenClosed: "Вернуть закрытое окно", openWindows: "Открытые окна",
 		noQuota: "Квота недоступна — откройте окно Kimi или войдите"
 	},
@@ -722,7 +722,7 @@ const STR = {
 		booster: "Booster 钱包", deepseek: "DeepSeek 余额", used: "已用", monthlyUsed: "本月已用",
 		leftFmt: (l, t) => `剩余 ${l}，共 ${t}`,
 		available: "可用", unavailable: "不可用——请充值",
-		usageReport: "用量报告", refreshQuota: "刷新用量", newWindow: "新建窗口",
+		refreshQuota: "刷新用量", newWindow: "新建窗口",
 		reopenClosed: "重新打开已关闭的窗口", openWindows: "已打开的窗口",
 		noQuota: "配额不可用——请打开 Kimi 窗口或登录"
 	}
@@ -755,8 +755,7 @@ async function showMenu() {
 			items.push({
 				label: `$(pulse) ${slotTitle(s)}`,
 				description: `${Math.round(s.ratio * 100)}%`,
-				detail: `[${usageBar(s.ratio)}]  ${Math.round(s.ratio * 100)}% ${T.used}${counter}${ps ? ` · ${ps.text}` : ""}`,
-				action: "usage"
+				detail: `[${usageBar(s.ratio)}]  ${Math.round(s.ratio * 100)}% ${T.used}${counter}${ps ? ` · ${ps.text}` : ""}`
 			});
 		}
 		const extra = res.quota && res.quota.extraUsage ? res.quota.extraUsage : null;
@@ -764,8 +763,7 @@ async function showMenu() {
 			items.push({
 				label: `$(pulse) ${T.booster}`,
 				description: money(extra.balanceCents, extra.currency),
-				detail: `${T.leftFmt(money(extra.balanceCents, extra.currency), money(extra.totalCents, extra.currency))} · ${T.monthlyUsed} ${money(extra.monthlyUsedCents, extra.currency)}`,
-				action: "usage"
+				detail: `${T.leftFmt(money(extra.balanceCents, extra.currency), money(extra.totalCents, extra.currency))} · ${T.monthlyUsed} ${money(extra.monthlyUsedCents, extra.currency)}`
 			});
 		}
 		const ds = res.deepseek;
@@ -773,15 +771,13 @@ async function showMenu() {
 			items.push({
 				label: `$(pulse) ${T.deepseek}`,
 				description: money(ds.total * 100, ds.currency),
-				detail: ds.available ? T.available : T.unavailable,
-				action: "usage"
+				detail: ds.available ? T.available : T.unavailable
 			});
 		}
 		items.push({ label: "", kind: vscode.QuickPickItemKind.Separator });
 	} else {
-		items.push({ label: `$(warning) ${T.noQuota}`, action: "usage" });
+		items.push({ label: `$(warning) ${T.noQuota}` });
 	}
-	items.push({ label: `$(graph) ${T.usageReport}`, action: "usage" });
 	items.push({ label: `$(refresh) ${T.refreshQuota}`, action: "refresh" });
 	items.push({ label: `$(add) ${T.newWindow}`, action: "open" });
 	items.push({ label: `$(history) ${T.reopenClosed}`, action: "reopen" });
