@@ -105,6 +105,12 @@ const ALERT_LATCH_KEY = "kimiQuotaAlertLatch";
 
 let appContext = null;
 let workingQuotaUrl = null;
+let lastUsageDebug = "-";
+
+function usageDebug(msg) {
+	lastUsageDebug = msg;
+	if (log) log.appendLine(`[usage] ${msg}`);
+}
 
 function quotaUrlCandidates() {
 	const urls = [];
@@ -160,10 +166,22 @@ const USAGE_KEY_MAP = {
 	limit_month_code: "monthCode"
 };
 
+function quotaWindowLabel(duration, timeUnit) {
+	const n = Number(duration) || 0;
+	const minutes =
+		timeUnit === "TIME_UNIT_MINUTE" ? n :
+		timeUnit === "TIME_UNIT_HOUR" ? n * 60 :
+		timeUnit === "TIME_UNIT_DAY" ? n * 1440 : 0;
+	if (minutes === 0) return `${duration} ${timeUnit || "window"}`;
+	if (minutes % 1440 === 0) return `${minutes / 1440}-day window`;
+	if (minutes % 60 === 0) return `${minutes / 60}-hour window`;
+	return `${minutes}-minute window`;
+}
+
 function parseDirectQuota(d) {
-	// NOTE: the wire `limits[]` rate-window counters are intentionally ignored —
-	// the official CLI `/usage` and the subscription page read only `usages.*`
-	// (limits[] runs on its own schedule and diverges from the page).
+	// Prefer the official usages.* fields; fall back to the wire limits[] rate-window
+	// counters for windows the usages object no longer carries — limit_5h has appeared
+	// and disappeared from both sources across API revisions (see CHANGELOG 1.3.0/1.6.1).
 	const usages = {};
 	const wire = d.usages || {};
 	for (const key of Object.keys(USAGE_KEY_MAP)) {
@@ -172,8 +190,29 @@ function parseDirectQuota(d) {
 			usages[USAGE_KEY_MAP[key]] = { usedRatio: u.used_ratio, resetAt: u.reset_time || undefined };
 		}
 	}
+	const windows = [];
+	for (const entry of d.limits || []) {
+		const detail = entry && entry.detail ? entry.detail : {};
+		const win = entry && entry.window ? entry.window : {};
+		const limit = Number(detail.limit);
+		const used = Number(detail.used);
+		if (!isFinite(limit) || limit <= 0 || !isFinite(used)) continue;
+		const durationMinutes =
+			win.timeUnit === "TIME_UNIT_MINUTE" ? Number(win.duration) :
+			win.timeUnit === "TIME_UNIT_HOUR" ? Number(win.duration) * 60 :
+			win.timeUnit === "TIME_UNIT_DAY" ? Number(win.duration) * 1440 : 0;
+		windows.push({
+			label: quotaWindowLabel(win.duration, win.timeUnit),
+			short: durationMinutes === 300 ? "5h" : durationMinutes > 0 ? `${durationMinutes}m` : "win",
+			ratio: used / limit,
+			used: detail.used,
+			limit: detail.limit,
+			resetAt: detail.resetTime || null,
+			durationMinutes
+		});
+	}
 	let extraUsage = null;
-	const bw = d.booster_wallet;
+	const bw = d.booster_wallet || d.boosterWallet;
 	if (bw && bw.balance) {
 		const cents8 = (v) => Math.round((Number(v) || 0) / 1e6);
 		const monthlyLimitCents = bw.monthlyChargeLimit ? Number(bw.monthlyChargeLimit.priceInCents) || 0 : 0;
@@ -189,21 +228,29 @@ function parseDirectQuota(d) {
 				"USD"
 		};
 	}
-	return { kind: "ok", source: "direct", quota: { usages, extraUsage } };
+	return { kind: "ok", source: "direct", windows, quota: { usages, extraUsage } };
 }
 
 async function fetchKimiQuotaDirect() {
 	const file = kimiCredentialsFile();
-	if (!file) return null;
+	if (!file) {
+		usageDebug("direct: no credentials file");
+		return null;
+	}
 	let tok;
 	try {
 		tok = JSON.parse(fs.readFileSync(file, "utf8"));
 	} catch {
+		usageDebug("direct: credentials file unreadable");
 		return null;
 	}
-	if (!tok || !tok.access_token) return null;
+	if (!tok || !tok.access_token) {
+		usageDebug("direct: no access_token in credentials");
+		return null;
+	}
 	if (typeof tok.expires_at === "number" && tok.expires_at - Date.now() / 1000 < 60) {
 		// Let the Kimi extension refresh the token; the next poll reads the fresh file.
+		usageDebug(`direct: token expires in ${Math.round(tok.expires_at - Date.now() / 1000)}s (<60) — skipped`);
 		return null;
 	}
 	const urls = workingQuotaUrl
@@ -215,15 +262,24 @@ async function fetchKimiQuotaDirect() {
 				headers: { Authorization: `Bearer ${tok.access_token}`, Accept: "application/json" }
 			});
 			if (!resp.ok) {
-				log.appendLine(`[usage] ${url} -> HTTP ${resp.status}`);
+				usageDebug(`${url} -> HTTP ${resp.status}`);
 				continue;
 			}
+			const payload = await resp.json();
+			const parsed = parseDirectQuota(payload);
+			const slotCount = parsed.windows.length + Object.keys(parsed.quota.usages).length;
+			const topKeys = payload && typeof payload === "object" ? Object.keys(payload) : [];
+			const winDbg = parsed.windows.map((w) => `${w.durationMinutes}m:${w.used}/${w.limit}`).join(" ");
+			const uDbg = Object.entries(parsed.quota.usages).map(([k, v]) => `${k}=${Math.round(v.usedRatio * 100)}%`).join(",");
+			usageDebug(`${url} -> keys: ${topKeys.join(",") || "(none)"}; slots: ${slotCount}; windows: ${winDbg || "-"}; usages: ${uDbg || "-"}`);
+			if (slotCount === 0) continue; // endpoint answered but carries no usable data — try the next candidate
 			workingQuotaUrl = url;
-			return parseDirectQuota(await resp.json());
+			return parsed;
 		} catch (err) {
-			log.appendLine(`[usage] ${url} -> ${err}`);
+			usageDebug(`${url} -> ${err}`);
 		}
 	}
+	usageDebug("direct: no candidate endpoint returned usable quota data");
 	return null;
 }
 
@@ -262,24 +318,30 @@ async function getUsage(force) {
 	try {
 		res = await fetchKimiQuotaDirect();
 	} catch (err) {
-		log.appendLine(`[usage] direct quota fetch failed: ${err}`);
+		usageDebug(`direct quota fetch failed: ${err}`);
 	}
 	if (!res) {
 		const fn = globalThis.__kimiCompanionGetUsage;
 		if (typeof fn === "function") {
 			try {
 				res = await fn(USAGE_PROVIDER);
+				if (res && res.kind === "ok") {
+					const uk = res.quota && res.quota.usages ? Object.keys(res.quota.usages) : [];
+					usageDebug(`hook -> usages keys: ${uk.join(",") || "(none)"}`);
+				}
 			} catch (err) {
-				log.appendLine(`[usage] hook threw: ${err}`);
+				usageDebug(`hook threw: ${err}`);
 				res = null;
 			}
+		} else {
+			usageDebug("hook not installed — is the Kimi extension patched? (run Diagnostics)");
 		}
 	}
 	if (res && res.kind === "ok") {
 		try {
 			res.deepseek = await fetchDeepseekBalance();
 		} catch (err) {
-			log.appendLine(`[usage] deepseek balance failed: ${err}`);
+			usageDebug(`deepseek balance failed: ${err}`);
 			res.deepseek = null;
 		}
 		usageCache = { data: res, at: Date.now() };
@@ -289,8 +351,28 @@ async function getUsage(force) {
 
 function usageSlots(res) {
 	const slots = [];
+	const windows = res && Array.isArray(res.windows) ? res.windows : [];
 	const usages = res && res.quota && res.quota.usages ? res.quota.usages : {};
+	const official5h = usages.limit5h && typeof usages.limit5h.usedRatio === "number" ? usages.limit5h : null;
+	// The official limit_5h has been stale-zero, stale-frozen and absent across API revisions;
+	// trust it only while it actually moves (non-zero). Otherwise the live wire counter wins.
+	const useOfficial5h = !!official5h && official5h.usedRatio > 0;
+	let has5hWindow = false;
+	for (const w of windows) {
+		if (w.durationMinutes === 300 && useOfficial5h) continue; // official field supersedes the wire counter
+		if (w.durationMinutes === 300) has5hWindow = true;
+		slots.push({
+			id: `win${w.durationMinutes || 0}`,
+			label: w.label,
+			short: w.short,
+			ratio: w.ratio,
+			resetAt: w.resetAt,
+			counter: `${w.used}/${w.limit}`,
+			durationMinutes: w.durationMinutes
+		});
+	}
 	for (const def of LIMITS) {
+		if (def.key === "limit5h" && has5hWindow) continue; // live wire counter supersedes a missing/stale-zero official field
 		const u = usages[def.key];
 		if (!u || typeof u.usedRatio !== "number") continue;
 		slots.push({
@@ -342,7 +424,11 @@ function paceSummary(slot, nowMs) {
 	if (info.depletesInMs != null) parts.push(`depletes in ~${formatDuration(info.depletesInMs)}`);
 	else parts.push(`on track (~${Math.min(999, Math.round(info.pace * 100))}% by reset)`);
 	parts.push(`resets in ${formatDuration(info.resetInMs)}`);
-	return { text: parts.join(" · "), hot: info.depletesInMs != null && slot.durationMinutes <= 1440 };
+	// Status-bar highlight follows the configured 5h threshold (default 80% of the window):
+	// the depletion forecast stays as tooltip text, only the raw ratio paints the bar,
+	// so a fast pace does not flip the color early.
+	const t5h = Number(vscode.workspace.getConfiguration("kimiCompanion").get("alertThreshold5h", 0.8));
+	return { text: parts.join(" · "), hot: slot.durationMinutes <= 1440 && slot.ratio >= t5h };
 }
 
 async function checkQuotaAlerts(res) {
@@ -548,6 +634,7 @@ function usageReport(res) {
 				: `DeepSeek balance: ${total} — unavailable, top-up needed (${detail})`
 		);
 	}
+	lines.push("", `Debug: ${lastUsageDebug}`);
 	return lines.join("\n") + "\n";
 }
 
@@ -560,6 +647,7 @@ function usageErrorReport(res) {
 		const msg = res.error || res.message || res.reason;
 		lines.push(`Usage request failed: ${typeof msg === "string" ? msg : JSON.stringify(res)}`);
 	}
+	lines.push("", `Debug: ${lastUsageDebug}`);
 	return lines.join("\n") + "\n";
 }
 
@@ -786,43 +874,7 @@ function slotTitle(s) {
 }
 
 async function showMenu() {
-	const res = await getUsage(false);
 	const items = [];
-	if (res && res.kind === "ok") {
-		const order = (s) =>
-			s.id === "monthTotal" ? 0 :
-			s.id === "win300" || s.id === "limit5h" ? 1 :
-			s.id === "limit7d" ? 2 : 3;
-		const sorted = usageSlots(res).slice().sort((a, b) => order(a) - order(b));
-		for (const s of sorted) {
-			const ps = paceSummary(s, Date.now());
-			const counter = s.counter ? ` · ${s.counter}` : "";
-			items.push({
-				label: `$(pulse) ${slotTitle(s)}`,
-				description: `${Math.round(s.ratio * 100)}%`,
-				detail: `[${usageBar(s.ratio)}]  ${Math.round(s.ratio * 100)}% ${T.used}${counter}${ps ? ` · ${ps.text}` : ""}`
-			});
-		}
-		const extra = res.quota && res.quota.extraUsage ? res.quota.extraUsage : null;
-		if (extra) {
-			items.push({
-				label: `$(pulse) ${T.booster}`,
-				description: money(extra.balanceCents, extra.currency),
-				detail: `${T.leftFmt(money(extra.balanceCents, extra.currency), money(extra.totalCents, extra.currency))} · ${T.monthlyUsed} ${money(extra.monthlyUsedCents, extra.currency)}`
-			});
-		}
-		const ds = res.deepseek;
-		if (ds) {
-			items.push({
-				label: `$(pulse) ${T.deepseek}`,
-				description: money(ds.total * 100, ds.currency),
-				detail: ds.available ? T.available : T.unavailable
-			});
-		}
-		items.push({ label: "", kind: vscode.QuickPickItemKind.Separator });
-	} else {
-		items.push({ label: `$(warning) ${T.noQuota}` });
-	}
 	items.push({ label: `$(refresh) ${T.refreshQuota}`, action: "refresh" });
 	items.push({ label: `$(add) ${T.newWindow}`, action: "open" });
 	items.push({ label: `$(history) ${T.reopenClosed}`, action: "reopen" });
@@ -844,7 +896,6 @@ async function showMenu() {
 		return;
 	}
 	const command = {
-		usage: "kimiCompanion.usage",
 		open: "kimiCompanion.open",
 		reopen: "kimiCompanion.reopenClosed"
 	}[picked.action];
@@ -1146,8 +1197,9 @@ async function renameWindow(context) {
 		);
 		return;
 	}
-	let panel = panels[0];
-	if (panels.length > 1) {
+	let panel = panels.find((p) => safe(() => p.active));
+	if (!panel && panels.length === 1) panel = panels[0];
+	if (!panel) {
 		const picked = await vscode.window.showQuickPick(
 			panels.map((p, i) => ({ label: p.title, description: `#${i + 1}`, panel: p })),
 			{ placeHolder: "Which Kimi window should be renamed?" }

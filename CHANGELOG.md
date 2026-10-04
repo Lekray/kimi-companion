@@ -5,6 +5,24 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- The status-bar menu no longer lists quota/limit rows (and the now-meaningless "Refresh quota" item) — limits live in the status bar, tooltip and usage report; the menu is for window management only.
+- "Rename window" renames the active Kimi window without asking; the picker remains only as a fallback when no active Kimi panel can be determined.
+- Booster wallet is read from `boosterWallet` (camelCase, current API) with the legacy `booster_wallet` as a fallback.
+- The 5-hour window falls back to the wire `limits[]` rate-window counter when `usages.limit_5h` is absent from the response. The field has appeared and disappeared across API revisions (see 1.3.0 / 1.6.1); whichever source actually carries the 5h data is displayed, with the official `usages.*` field preferred when both exist.
+- Quota fetch no longer latches onto an endpoint that answers HTTP 200 but carries no usable limit slots — it tries the next candidate URL, so a stale/emptied endpoint cannot starve the 5-hour window.
+
+### Added
+
+- The usage report ends with a `Debug:` line and the Output channel logs the fetch path (endpoint keys + slot counts, or the hook fallback) — what the server actually sent is visible without hunting through logs.
+
+### Changed
+
+- The status-bar hot highlight now starts at the configured 5-hour threshold (`kimiCompanion.alertThreshold5h`, default 0.8 = 80% of the window) instead of the depletion forecast, which could flip the color as early as ~73% on a fast pace. The forecast remains as text in the tooltip.
+
 ## [1.6.1] - 2026-10-05
 
 ### Fixed
