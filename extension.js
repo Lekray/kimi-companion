@@ -2,6 +2,7 @@ const vscode = require("vscode");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
+const zlib = require("zlib");
 
 const KIMI_EXT_ID = "moonshot-ai.kimi-code";
 const ENTRIES_KEY = "kimiTabEntries";
@@ -458,6 +459,100 @@ function money(cents, currency) {
 	return `${sym}${value.toFixed(2)}`;
 }
 
+// --- Rich tooltip with progress bars -------------------------------------
+
+let crcTable = null;
+function crc32(buf) {
+	if (typeof zlib.crc32 === "function") return Number(zlib.crc32(buf) >>> 0);
+	if (!crcTable) {
+		crcTable = new Int32Array(256);
+		for (let n = 0; n < 256; n++) {
+			let c = n;
+			for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+			crcTable[n] = c;
+		}
+	}
+	let c = ~0;
+	for (let i = 0; i < buf.length; i++) c = (c >>> 8) ^ crcTable[(c ^ buf[i]) & 255];
+	return (~c) >>> 0;
+}
+
+function pngChunk(type, data) {
+	const len = Buffer.alloc(4);
+	len.writeUInt32BE(data.length, 0);
+	const body = Buffer.concat([Buffer.from(type, "ascii"), data]);
+	const crc = Buffer.alloc(4);
+	crc.writeUInt32BE(crc32(body), 0);
+	return Buffer.concat([len, body, crc]);
+}
+
+function barPngDataUri(ratio, hot) {
+	const W = 260;
+	const H = 8;
+	const r = Math.max(0, Math.min(1, ratio));
+	const fg = hot ? [0xe5, 0x4a, 0x4a] : [0x2f, 0x81, 0xd6];
+	const bg = [0x42, 0x45, 0x4a];
+	const fillPx = Math.round(W * r);
+	const raw = Buffer.alloc(H * (1 + W * 4));
+	for (let y = 0; y < H; y++) {
+		const ro = y * (1 + W * 4);
+		for (let x = 0; x < W; x++) {
+			const c = x < fillPx ? fg : bg;
+			const o = ro + 1 + x * 4;
+			raw[o] = c[0];
+			raw[o + 1] = c[1];
+			raw[o + 2] = c[2];
+			raw[o + 3] = 255;
+		}
+	}
+	const ihdr = Buffer.alloc(13);
+	ihdr.writeUInt32BE(W, 0);
+	ihdr.writeUInt32BE(H, 4);
+	ihdr[8] = 8;
+	ihdr[9] = 6;
+	const png = Buffer.concat([
+		Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+		pngChunk("IHDR", ihdr),
+		pngChunk("IDAT", zlib.deflateSync(raw)),
+		pngChunk("IEND", Buffer.alloc(0))
+	]);
+	return "data:image/png;base64," + png.toString("base64");
+}
+
+function usageTooltip(res, slots, nowMs) {
+	const md = new vscode.MarkdownString(undefined, true);
+	md.supportHtml = true;
+	md.isTrusted = true;
+	md.appendMarkdown(`**Kimi Code**\n\n---\n\n`);
+	const order = (s) =>
+		s.id === "monthTotal" ? 0 :
+		s.id === "win300" || s.id === "limit5h" ? 1 :
+		s.id === "limit7d" ? 2 : 3;
+	for (const s of slots.slice().sort((a, b) => order(a) - order(b))) {
+		const ps = paceSummary(s, nowMs);
+		const reset = resetStamp(s.resetAt, true);
+		md.appendMarkdown(`**${slotTitle(s)}**${reset ? ` — ${T.resetShort} ${reset}` : ""}\n\n`);
+		md.appendMarkdown(`### **${Math.round(s.ratio * 100)}%** _${T.used}_${s.counter ? ` (${s.counter})` : ""}\n\n`);
+		md.appendMarkdown(`![${Math.round(s.ratio * 100)}%](${barPngDataUri(s.ratio, !!(ps && ps.hot))})\n\n`);
+		if (ps) md.appendMarkdown(`${ps.text}\n\n`);
+		md.appendMarkdown(`---\n\n`);
+	}
+	const extra = res.quota && res.quota.extraUsage ? res.quota.extraUsage : null;
+	const bits = [];
+	if (extra) {
+		bits.push(`**${T.booster}:** ${T.leftFmt(money(extra.balanceCents, extra.currency), money(extra.totalCents, extra.currency))}`);
+	}
+	const ds = res.deepseek;
+	if (ds) {
+		bits.push(`**${T.deepseek}:** ${money(ds.total * 100, ds.currency)}${ds.available ? "" : ` — ${T.unavailable}`}`);
+	}
+	if (bits.length > 0) md.appendMarkdown(bits.join(" · ") + "\n\n---\n\n");
+	md.appendMarkdown(
+		`[$(graph) ${T.usageReport}](command:kimiCompanion.usage "Usage")  ·  [$(add) ${T.newWindow}](command:kimiCompanion.open "Open")`
+	);
+	return md;
+}
+
 function extraUsageLines(res) {
 	const extra = res && res.quota ? res.quota.extraUsage : null;
 	if (!extra) return [];
@@ -539,20 +634,11 @@ async function refreshUsageStatus() {
 		item.text = parts.length > 0 ? `$(kimi-companion-k) ${parts.join(" · ")}` : STATUS_TEXT;
 		const now = Date.now();
 		let hot = false;
-		const tip = ["Kimi Code"];
 		for (const s of slots) {
-			const reset = resetStamp(s.resetAt, false);
-			const counter = s.counter ? ` (${s.counter})` : "";
 			const ps = paceSummary(s, now);
-			tip.push(
-				`${s.short}: ${Math.round(s.ratio * 100)}%${counter}${reset ? ` (reset ${reset})` : ""}${ps ? ` — ${ps.text}` : ""}`
-			);
 			if (ps && ps.hot) hot = true;
 		}
-		if (res.deepseek) {
-			tip.push(`deepseek: ${money(res.deepseek.total * 100, res.deepseek.currency)}`);
-		}
-		item.tooltip = tip.join("\n");
+		item.tooltip = usageTooltip(res, slots, now);
 		item.backgroundColor = hot ? new vscode.ThemeColor("statusBarItem.errorBackground") : undefined;
 		void checkQuotaAlerts(res);
 	} catch (err) {
@@ -704,6 +790,7 @@ const STR = {
 		booster: "Booster wallet", deepseek: "DeepSeek balance", used: "used", monthlyUsed: "monthly used",
 		leftFmt: (l, t) => `${l} left of ${t}`,
 		available: "available", unavailable: "unavailable — top-up needed",
+		usageReport: "Usage report", resetShort: "reset",
 		refreshQuota: "Refresh quota", newWindow: "New window",
 		reopenClosed: "Reopen closed window", openWindows: "Open windows",
 		noQuota: "Quota unavailable — open a Kimi window or sign in"
@@ -713,6 +800,7 @@ const STR = {
 		booster: "Бустер-кошелёк", deepseek: "Баланс DeepSeek", used: "использовано", monthlyUsed: "за месяц использовано",
 		leftFmt: (l, t) => `осталось ${l} из ${t}`,
 		available: "доступен", unavailable: "недоступен — нужно пополнить",
+		usageReport: "Отчёт по лимитам", resetShort: "сброс",
 		refreshQuota: "Обновить лимиты", newWindow: "Новое окно",
 		reopenClosed: "Вернуть закрытое окно", openWindows: "Открытые окна",
 		noQuota: "Квота недоступна — откройте окно Kimi или войдите"
@@ -722,6 +810,7 @@ const STR = {
 		booster: "Booster 钱包", deepseek: "DeepSeek 余额", used: "已用", monthlyUsed: "本月已用",
 		leftFmt: (l, t) => `剩余 ${l}，共 ${t}`,
 		available: "可用", unavailable: "不可用——请充值",
+		usageReport: "用量报告", resetShort: "重置",
 		refreshQuota: "刷新用量", newWindow: "新建窗口",
 		reopenClosed: "重新打开已关闭的窗口", openWindows: "已打开的窗口",
 		noQuota: "配额不可用——请打开 Kimi 窗口或登录"
