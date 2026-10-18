@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.7.0] - 2026-10-18
+
+### Added
+
+- Tab title status markers (`kimiCompanion.tabStatusMarkers`, default `true`): the title of a Kimi window is prefixed with `[~]` while a turn is running, `[V]` when it completes, `[!]` on failure and `[?]` while the agent waits for an approval or an answer. Fed by three new patches on the Kimi extension (`__kimiCompanionTurnStarted` on the prompt start and `__kimiCompanionWaitA__` / `__kimiCompanionWaitQ__` on the approval/question handlers); a cancelled turn clears the marker. Markers are kept out of persisted window entries, renaming and the completion notification, and auto-naming still works while a marker is shown.
+
+## [1.6.2] - 2026-10-05
+
 ### Fixed
 
 - The status-bar menu no longer lists quota/limit rows (and the now-meaningless "Refresh quota" item) — limits live in the status bar, tooltip and usage report; the menu is for window management only.
@@ -17,6 +25,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Optional native notification when a Kimi agent turn finishes normally in a tab (`kimiCompanion.tabCompletionNotification`, default `false`), fed by an eighth patch (`__kimiCompanionTurnSettled`) on the Kimi turn terminal; cancelled, failed, background and history turns stay silent.
+- Bundled completion chime, independent of the notification and enabled by default (`kimiCompanion.tabCompletionSound`): `resources/completion.wav` played through PowerShell `SoundPlayer` on Windows, `afplay` on macOS and `paplay` on Linux; desktop sessions only. No window flashing — VS Code has no reliable API to flash a specific window.
 - The usage report ends with a `Debug:` line and the Output channel logs the fetch path (endpoint keys + slot counts, or the hook fallback) — what the server actually sent is visible without hunting through logs.
 
 ### Changed
@@ -112,6 +122,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Self-healing patches for the Kimi extension.
 - Recommended pinned Kimi extension version.
 
+[1.7.0]: https://github.com/Lekray/kimi-companion/compare/v1.6.2...v1.7.0
+[1.6.2]: https://github.com/Lekray/kimi-companion/compare/v1.6.1...v1.6.2
 [1.6.1]: https://github.com/Lekray/kimi-companion/compare/v1.6.0...v1.6.1
 [1.6.0]: https://github.com/Lekray/kimi-companion/compare/v1.5.1...v1.6.0
 [1.5.1]: https://github.com/Lekray/kimi-companion/compare/v1.5.0...v1.5.1

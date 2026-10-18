@@ -1,4 +1,5 @@
 const vscode = require("vscode");
+const { spawn } = require("child_process");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
@@ -59,6 +60,38 @@ const EXT_UNITS = [
 			"\t\t/*__kimiCompanion3__*/ if (!globalThis.__kimiCompanionGetUsage) {\n" +
 			"\t\t\tglobalThis.__kimiCompanionGetUsage = (providerName = \"managed:kimi-code\") => this.bridgeHandler.runtime.harness.auth.getManagedUsage(providerName);\n" +
 			"\t\t}"
+	},
+	{
+		marker: "/*__kimiCompanionTurnSettled__*/",
+		old: "this.terminalKeys.add(terminal.key);",
+		repl: "this.terminalKeys.add(terminal.key); /*__kimiCompanionTurnSettled__*/ try { " +
+			"if (globalThis.__kimiCompanionTurnSettled) globalThis.__kimiCompanionTurnSettled({ " +
+			"key: terminal.key, sessionId: terminal.sessionId, agentId: terminal.agentId, turnId: terminal.turnId, " +
+			"reason: terminal.reason, error: terminal.error, promptActive: this.activePrompt !== void 0, " +
+			"webviewIds: [...this.webviewIds] }); } catch {}"
+	},
+	{
+		marker: "__kimiCompanionTurnStarted",
+		old: "this.activePrompt = active;",
+		repl: "this.activePrompt = active; /*__kimiCompanionTurnStarted__*/ try { " +
+			"if (globalThis.__kimiCompanionTurnStarted) globalThis.__kimiCompanionTurnStarted({ " +
+			"sessionId: this.id, webviewIds: [...this.webviewIds] }); } catch {}"
+	},
+	{
+		marker: "/*__kimiCompanionWaitA__*/",
+		old: "this.session.setApprovalHandler((request) => this.reverseRpc.requestApproval(request));",
+		repl: "this.session.setApprovalHandler((request) => { /*__kimiCompanionWaitA__*/ " +
+			"const __kcW = (waiting) => { try { if (globalThis.__kimiCompanionWaiting) " +
+			"globalThis.__kimiCompanionWaiting({ waiting, sessionId: this.id, webviewIds: [...this.webviewIds] }); } catch {} }; " +
+			"__kcW(true); return this.reverseRpc.requestApproval(request).finally(() => __kcW(false)); });"
+	},
+	{
+		marker: "/*__kimiCompanionWaitQ__*/",
+		old: "this.session.setQuestionHandler((request) => this.reverseRpc.requestQuestion(request));",
+		repl: "this.session.setQuestionHandler((request) => { /*__kimiCompanionWaitQ__*/ " +
+			"const __kcW = (waiting) => { try { if (globalThis.__kimiCompanionWaiting) " +
+			"globalThis.__kimiCompanionWaiting({ waiting, sessionId: this.id, webviewIds: [...this.webviewIds] }); } catch {} }; " +
+			"__kcW(true); return this.reverseRpc.requestQuestion(request).finally(() => __kcW(false)); });"
 	}
 ];
 const WV_UNITS = [
@@ -773,7 +806,8 @@ function hookStatus() {
 		"__kimiCompanionGetWebviewId",
 		"__kimiCompanionLoadSession",
 		"__kimiCompanionGetSidebarId",
-		"__kimiCompanionGetUsage"
+		"__kimiCompanionGetUsage",
+		"__kimiCompanionTurnSettled"
 	];
 	return names.map((n) => `${n}: ${typeof globalThis[n]}`);
 }
@@ -837,7 +871,8 @@ const STR = {
 		usageReport: "Usage report", resetShort: "reset",
 		refreshQuota: "Refresh quota", newWindow: "New window",
 		reopenClosed: "Reopen closed window", openWindows: "Open windows",
-		noQuota: "Quota unavailable — open a Kimi window or sign in"
+		noQuota: "Quota unavailable — open a Kimi window or sign in",
+		tabCompletionMessage: (title) => `Kimi Code: the work in "${title}" is complete.`
 	},
 	ru: {
 		monthly: "Месячный лимит", monthCode: "Месячный (code)", sevenDay: "7-дневный лимит", fiveHour: "5-часовое окно",
@@ -847,7 +882,8 @@ const STR = {
 		usageReport: "Отчёт по лимитам", resetShort: "сброс",
 		refreshQuota: "Обновить лимиты", newWindow: "Новое окно",
 		reopenClosed: "Вернуть закрытое окно", openWindows: "Открытые окна",
-		noQuota: "Квота недоступна — откройте окно Kimi или войдите"
+		noQuota: "Квота недоступна — откройте окно Kimi или войдите",
+		tabCompletionMessage: (title) => `Kimi Code: работа во вкладке «${title}» завершена.`
 	},
 	zh: {
 		monthly: "月度限额", monthCode: "月度限额 (code)", sevenDay: "7 天限额", fiveHour: "5 小时窗口",
@@ -857,7 +893,8 @@ const STR = {
 		usageReport: "用量报告", resetShort: "重置",
 		refreshQuota: "刷新用量", newWindow: "新建窗口",
 		reopenClosed: "重新打开已关闭的窗口", openWindows: "已打开的窗口",
-		noQuota: "配额不可用——请打开 Kimi 窗口或登录"
+		noQuota: "配额不可用——请打开 Kimi 窗口或登录",
+		tabCompletionMessage: (title) => `Kimi Code：「${title}」中的任务已完成。`
 	}
 };
 const T = (() => {
@@ -915,6 +952,127 @@ function getKimiPanels() {
 	});
 }
 
+// --- Tab status markers -------------------------------------------------
+
+const STATUS_MARKERS = { running: "[~]", done: "[V]", error: "[!]", waiting: "[?]" };
+const STATUS_RE = /^(?:\[~]|\[V]|\[!]|\[\?])\s+/;
+const panelStatus = new WeakMap();
+
+function stripStatusMarker(title) {
+	return String(title || "").replace(STATUS_RE, "");
+}
+
+function statusMarkersEnabled() {
+	return vscode.workspace.getConfiguration("kimiCompanion").get("tabStatusMarkers", true);
+}
+
+function setPanelStatus(panel, status) {
+	const base = stripStatusMarker(safe(() => panel.title) || "");
+	if (!base) return;
+	if (status) panelStatus.set(panel, status);
+	else panelStatus.delete(panel);
+	const marker = status && statusMarkersEnabled() ? STATUS_MARKERS[status] + " " : "";
+	try {
+		if (panel.title !== marker + base) panel.title = marker + base;
+		log.appendLine(`[status] ${status || "idle"} "${base}"`);
+	} catch {
+		// panel gone
+	}
+}
+
+// --- Turn completion alert ---------------------------------------------
+
+const COMPLETION_SOUND = path.join(__dirname, "resources", "completion.wav");
+const SOUND_COMMAND = {
+	win32: ["powershell.exe", ["-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-Command", "$s=New-Object System.Media.SoundPlayer($env:KIMI_COMPANION_SOUND); $s.PlaySync()"]],
+	darwin: ["/usr/bin/afplay", [COMPLETION_SOUND]],
+	linux: ["paplay", [COMPLETION_SOUND]]
+};
+
+function playCompletionSound() {
+	try {
+		if (vscode.env.uiKind !== vscode.UIKind.Desktop || vscode.env.remoteName) return;
+		const spec = SOUND_COMMAND[process.platform];
+		if (!spec) return;
+		const options = { stdio: "ignore", windowsHide: false };
+		if (process.platform === "win32") {
+			options.env = { ...process.env, KIMI_COMPANION_SOUND: COMPLETION_SOUND };
+		}
+		const child = spawn(spec[0], spec[1], options);
+		child.on("error", (err) => {
+			if (log) log.appendLine(`[sound] FAILED: ${err}`);
+		});
+	} catch (err) {
+		if (log) log.appendLine(`[sound] FAILED: ${err}`);
+	}
+}
+
+function findPanelsByWebviewIds(webviewIds) {
+	const { getWebviewId } = getHooks();
+	if (!getWebviewId || !Array.isArray(webviewIds) || webviewIds.length === 0) return [];
+	return getKimiPanels().filter((p) => {
+		const wid = safe(() => getWebviewId(p));
+		return wid && webviewIds.includes(wid);
+	});
+}
+
+function findPanelByWebviewIds(webviewIds) {
+	return findPanelsByWebviewIds(webviewIds)[0] || null;
+}
+
+function updateStatusOnStarted(info) {
+	try {
+		if (!info) return;
+		for (const p of findPanelsByWebviewIds(info.webviewIds)) setPanelStatus(p, "running");
+	} catch (err) {
+		if (log) log.appendLine(`[status] start FAILED: ${err}`);
+	}
+}
+
+function updateStatusOnWaiting(info) {
+	try {
+		if (!info) return;
+		for (const p of findPanelsByWebviewIds(info.webviewIds)) {
+			if (info.waiting) setPanelStatus(p, "waiting");
+			else if (panelStatus.get(p) === "waiting") setPanelStatus(p, "running");
+		}
+	} catch (err) {
+		if (log) log.appendLine(`[status] waiting FAILED: ${err}`);
+	}
+}
+
+function updateStatusOnSettled(info) {
+	try {
+		if (!info) return;
+		let status;
+		if (info.reason === "completed") status = "done";
+		else if (info.reason === "cancelled") status = null;
+		else status = "error";
+		for (const p of findPanelsByWebviewIds(info.webviewIds)) setPanelStatus(p, status);
+	} catch (err) {
+		if (log) log.appendLine(`[status] settled FAILED: ${err}`);
+	}
+}
+
+async function notifyTabCompletion(info) {
+	try {
+		const config = vscode.workspace.getConfiguration("kimiCompanion");
+		const notify = config.get("tabCompletionNotification", false);
+		const sound = config.get("tabCompletionSound", true);
+		if (!notify && !sound) return;
+		if (!info || info.reason !== "completed" || info.promptActive !== true) return;
+		const panel = findPanelByWebviewIds(info.webviewIds);
+		if (!panel) return;
+		const title = stripStatusMarker(safe(() => panel.title) || DEFAULT_TITLE);
+		log.appendLine(`[done] "${title}" session=${info.sessionId || "-"}`);
+		if (sound) playCompletionSound();
+		if (!notify) return;
+		await vscode.window.showInformationMessage(T.tabCompletionMessage(title));
+	} catch (err) {
+		if (log) log.appendLine(`[done] FAILED: ${err}`);
+	}
+}
+
 // --- Tracking state -------------------------------------------------
 
 function currentEntries() {
@@ -923,7 +1081,7 @@ function currentEntries() {
 		let sessionId = null;
 		const wid = getWebviewId ? safe(() => getWebviewId(p)) : undefined;
 		if (wid && getSessionId) sessionId = safe(() => getSessionId(wid)) || null;
-		return { title: p.title, sessionId, column: safe(() => p.viewColumn) || null };
+		return { title: stripStatusMarker(p.title), sessionId, column: safe(() => p.viewColumn) || null };
 	});
 }
 
@@ -980,14 +1138,16 @@ function autoNamePanels() {
 	const { getWebviewId, getSessionId } = getHooks();
 	if (!getWebviewId || !getSessionId) return;
 	for (const p of getKimiPanels()) {
-		if (p.title !== DEFAULT_TITLE) continue;
+		if (stripStatusMarker(p.title) !== DEFAULT_TITLE) continue;
 		const wid = safe(() => getWebviewId(p));
 		const sid = wid ? safe(() => getSessionId(wid)) : null;
 		if (!sid) continue;
 		const name = deriveSessionName(sid);
 		if (name) {
 			try {
-				p.title = name;
+				const status = panelStatus.get(p) || null;
+				const marker = status && statusMarkersEnabled() ? STATUS_MARKERS[status] + " " : "";
+				p.title = marker + name;
 				log.appendLine(`[autoname] "${name}"`);
 			} catch {
 				// panel gone
@@ -1210,12 +1370,13 @@ async function renameWindow(context) {
 	panel.reveal(undefined, false);
 	const name = await vscode.window.showInputBox({
 		prompt: "New title for the Kimi window",
-		value: panel.title,
+		value: stripStatusMarker(panel.title),
 		ignoreFocusOut: true
 	});
 	if (!name || !name.trim()) return;
 	try {
 		panel.title = name.trim();
+		setPanelStatus(panel, panelStatus.get(panel) || null);
 		log.appendLine(`[rename] title set to "${name.trim()}"`);
 		reconcile(context, "rename");
 	} catch (err) {
@@ -1246,6 +1407,19 @@ function activate(context) {
 	log = vscode.window.createOutputChannel("Kimi Code Companion");
 	context.subscriptions.push(log);
 	log.appendLine(`[activate] ${new Date().toISOString()}`);
+
+	globalThis.__kimiCompanionTurnSettled = (info) => {
+		setTimeout(() => {
+			updateStatusOnSettled(info);
+			void notifyTabCompletion(info);
+		}, 0);
+	};
+	globalThis.__kimiCompanionTurnStarted = (info) => {
+		setTimeout(() => updateStatusOnStarted(info), 0);
+	};
+	globalThis.__kimiCompanionWaiting = (info) => {
+		setTimeout(() => updateStatusOnWaiting(info), 0);
+	};
 
 	ensureMoonshotPatched();
 
@@ -1336,10 +1510,19 @@ function activate(context) {
 			if (e.affectsConfiguration("kimiCompanion.usageInStatusBar")) {
 				void refreshUsageStatus();
 			}
+			if (e.affectsConfiguration("kimiCompanion.tabStatusMarkers")) {
+				for (const p of getKimiPanels()) setPanelStatus(p, panelStatus.get(p) || null);
+				reconcile(context, "statusMarkers");
+			}
 		})
 	);
 }
 
-function deactivate() {}
+function deactivate() {
+	if (log) log.appendLine(`[deactivate] ${new Date().toISOString()}`);
+	delete globalThis.__kimiCompanionTurnSettled;
+	delete globalThis.__kimiCompanionTurnStarted;
+	delete globalThis.__kimiCompanionWaiting;
+}
 
 module.exports = { activate, deactivate };

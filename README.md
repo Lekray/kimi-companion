@@ -10,10 +10,12 @@ Companion extension for the official **Kimi Code** VS Code extension (`moonshot-
 - **`Kimi Code: Usage`** — the current subscription quota (5h / 7d / monthly limits plus the booster wallet) as a separate report, with pace, depletion forecast and reset countdown;
 - **DeepSeek balance in the Usage report and status bar tooltip** (reads the `[providers.deepseek]` key from the Kimi Code config);
 - **Threshold alerts** — native VS Code notifications with a per-window latch: the 5-hour window at ≥ 80%, the monthly limit at ≥ 90%, and the DeepSeek balance below $1 (`kimiCompanion.alerts`, `kimiCompanion.alertThreshold5h`, `kimiCompanion.alertThresholdMonth`, `kimiCompanion.alertDeepseekBelowUsd`);
+- **Turn-completion alert** — a short chime by default and an optional native notification with the window title when a Kimi agent turn finishes normally in a tab (`kimiCompanion.tabCompletionNotification`, `kimiCompanion.tabCompletionSound`);
+- **Tab status markers** — the window title is prefixed with its live state: `[~]` working, `[V]` done, `[!]` error, `[?]` waiting for your approval or answer (`kimiCompanion.tabStatusMarkers`);
 - **Usage in the status bar** — two values, the monthly limit first and then the 5-hour window (e.g. `M 16% · 5h 82%`), refreshed every 5 minutes (`kimiCompanion.usageInStatusBar`); the bar turns red when a short window (≤ 1 day) is projected to deplete before its reset; **hovering the button opens a rich Copilot-style panel** — for every limit a header with its reset date, a large percent and a graphical progress bar (a real image generated at runtime, red when the short window is projected to run out before its reset), a pace/forecast line, the booster wallet and the DeepSeek balance, and clickable action links (usage report / new window);
 - **Copilot-style status bar menu** — clicking the button opens an expanded QuickPick: quota rows with their values on the right, a usage bar and details below (pace, reset countdown), then the actions (Refresh quota, New window, Reopen closed window) and the list of open windows to focus; quota rows are informational — clicking one just closes the menu and does not open a separate report (the `Kimi Code: Usage` report stays available from the command palette); Refresh quota refetches the data and reopens the menu; the menu is localized to the VS Code UI language (en / ru / zh-cn; pace phrases stay English);
 - **`Ctrl+Alt+K`** (`Cmd+Alt+K` on macOS) — new Kimi window;
-- **`Kimi Code: Diagnostics`** — a state report: versions, all 7 patches, hooks, windows, saved state;
+- **`Kimi Code: Diagnostics`** — a state report: versions, all 11 patches, hooks, windows, saved state;
 - Restores the conversation in the Kimi **sidebar** as well.
 
 Activity log: View → Output → channel **"Kimi Code Companion"**.
@@ -36,7 +38,7 @@ Activity log: View → Output → channel **"Kimi Code Companion"**.
 
 ## How it works (and why it patches the Kimi extension)
 
-VS Code does not let one extension touch another extension's webview panels (neither retitle them nor read their session). So the companion applies seven tiny patches to the Kimi extension's `dist` — they register panels and hooks in `globalThis` (the shared extension-host scope):
+VS Code does not let one extension touch another extension's webview panels (neither retitle them nor read their session). So the companion applies eleven tiny patches to the Kimi extension's `dist` — they register panels and hooks in `globalThis` (the shared extension-host scope):
 
 | # | File | Marker | Purpose |
 |---|------|--------|---------|
@@ -47,6 +49,10 @@ VS Code does not let one extension touch another extension's webview panels (nei
 | 5 | extension.js | `__kimiCompanionGetSidebarId` | sidebar webview id hook |
 | 6 | webview.js | `__kimiCompanionLoadSessionInUi` | webview handler for `__kimiCompanionLoadSession` — the stock `loadSessionHistory → loadSession` flow |
 | 7 | extension.js | `__kimiCompanionGetUsage` | subscription quota hook via `harness.auth.getManagedUsage` (fallback — the companion normally reads the quota directly) |
+| 8 | extension.js | `/*__kimiCompanionTurnSettled__*/` | the turn terminal (`emitTerminal`) is reported to `globalThis.__kimiCompanionTurnSettled` — the tab-completion notification |
+| 9 | extension.js | `__kimiCompanionTurnStarted` | a prompt start (`this.activePrompt = active`) is reported to `globalThis.__kimiCompanionTurnStarted` — the `[~]` status |
+| 10 | extension.js | `/*__kimiCompanionWaitA__*/` | the approval handler is wrapped: pending/resolved approvals are reported to `globalThis.__kimiCompanionWaiting` — the `[?]` status |
+| 11 | extension.js | `/*__kimiCompanionWaitQ__*/` | same wrapper on the question handler — the `[?]` status |
 
 Originals are kept next to the patched files: `extension.js.bak-kimi-companion`, `webview.js.bak-kimi-companion`.
 
@@ -68,6 +74,8 @@ Uninstall:
 ## Settings
 
 - `kimiCompanion.restoreTabOnStartup` (default `true`) — restore Kimi windows after a reload;
+- `kimiCompanion.tabCompletionNotification` (default `false`) — native notification when a Kimi agent turn finishes normally in a window/tab;
+- `kimiCompanion.tabCompletionSound` (default `true`) — bundled chime on the same completion (desktop sessions only);
 - `kimiCompanion.statusBarButton` (default `true`) — the status bar button;
 - `kimiCompanion.usageInStatusBar` (default `true`) — show the subscription usage percent in the status bar;
 - `kimiCompanion.alerts` (default `true`) — native notifications when a usage threshold is crossed (once per limit window);
@@ -80,3 +88,6 @@ Uninstall:
 - History is restored in tab windows and in the sidebar; a window that had a brand-new empty conversation restores empty (titled).
 - If a conversation was deleted from the session list, its window restores empty.
 - Status bar icons are single-color (VS Code limitation), so the blue dot of the "K" mark is monochrome there.
+- The turn-completion notification fires only for turns that end normally in an open Kimi tab; the sidebar, cancelled or failed turns, and background or history turns stay silent.
+- The bundled chime (`resources/completion.wav`) is played through PowerShell `SoundPlayer` on Windows, `afplay` on macOS and `paplay` on Linux (a missing player means silence); web and remote sessions stay silent.
+- VS Code has no reliable API to flash the specific window on completion, so window flashing is not implemented.
