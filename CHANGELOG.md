@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.7.2] - 2026-10-18
+
+### Added
+
+- The status bar also shows the booster wallet balance after the quota percents (`$(credit-card) $12.34`), whenever the wallet is present in the usage response.
+
 ## [1.7.1] - 2026-10-18
 
 ### Fixed
@@ -145,6 +151,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Self-healing patches for the Kimi extension.
 - Recommended pinned Kimi extension version.
 
+[1.7.2]: https://github.com/Lekray/kimi-companion/compare/v1.7.1...v1.7.2
 [1.7.1]: https://github.com/Lekray/kimi-companion/compare/v1.7.0...v1.7.1
 [1.7.0]: https://github.com/Lekray/kimi-companion/compare/v1.6.2...v1.7.0
 [1.6.2]: https://github.com/Lekray/kimi-companion/compare/v1.6.1...v1.6.2

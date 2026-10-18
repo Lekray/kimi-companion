@@ -12,7 +12,7 @@
 - **阈值告警**——带「每个窗口只触发一次」闩锁的原生 VS Code 通知：5 小时窗口 ≥ 80%、月度限额 ≥ 90%、DeepSeek 余额低于 $1（设置项 `kimiCompanion.alerts`、`kimiCompanion.alertThreshold5h`、`kimiCompanion.alertThresholdMonth`、`kimiCompanion.alertDeepseekBelowUsd`）；
 - **任务完成提示音与通知**——Kimi 代理在某标签页中正常完成一轮对话时，默认播放短促的提示音，也可单独启用带窗口标题的原生通知（设置项 `kimiCompanion.tabCompletionNotification`、`kimiCompanion.tabCompletionSound`）；
 - **标签页标题状态标记**——窗口标题前显示实时状态：`[~]` 进行中，`[V]` 已完成，`[!]` 出错，`[?]` 等待您的批准或回答（`kimiCompanion.tabStatusMarkers`）；
-- **状态栏显示用量**——两个数值：先显示月度限额，再显示 5 小时窗口（例如 `M 16% · 5h 82%`），每 5 分钟刷新一次（设置项 `kimiCompanion.usageInStatusBar`）；当短窗口（≤ 1 天）达到 `kimiCompanion.alertThreshold5h` 阈值（默认 80%）时，状态栏变为红色；把鼠标悬停在按钮上会打开 Copilot 风格的丰富面板——每个限额都有带重置日期的标题、大号百分比和图形进度条（真实图像，运行时生成；达到同一阈值时显示为红色）、消耗速度与预测行、booster 钱包和 DeepSeek 余额，底部还有可点击的操作链接（用量报告 / 新建窗口）；
+- **状态栏显示用量**——两个数值：先显示月度限额，再显示 5 小时窗口，外加 booster 钱包余额（例如 `M 16% · 5h 82% · 💳 $12.34`），每 5 分钟刷新一次（设置项 `kimiCompanion.usageInStatusBar`）；当短窗口（≤ 1 天）达到 `kimiCompanion.alertThreshold5h` 阈值（默认 80%）时，状态栏变为红色；把鼠标悬停在按钮上会打开 Copilot 风格的丰富面板——每个限额都有带重置日期的标题、大号百分比和图形进度条（真实图像，运行时生成；达到同一阈值时显示为红色）、消耗速度与预测行、booster 钱包和 DeepSeek 余额，底部还有可点击的操作链接（用量报告 / 新建窗口）；
 - **状态栏菜单**——点击状态栏按钮打开菜单：操作项（刷新用量、新建窗口、重新打开已关闭的窗口）以及已打开窗口的聚焦列表；菜单中不再重复显示额度——额度显示在状态栏、其悬停提示和 `Kimi Code: Usage` 报告中；「刷新用量」会重新获取数据并再次打开菜单；菜单与悬停提示按 VS Code 界面语言本地化（en / ru / zh-cn，消耗速度相关短语仍为英文）；
 - **`Ctrl+Alt+K`**（macOS 为 `Cmd+Alt+K`）——新建 Kimi 窗口；
 - **`Kimi Code: Diagnostics`**——状态报告：版本、全部 12 处补丁、钩子、窗口、已保存的状态；

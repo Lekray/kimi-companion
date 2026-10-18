@@ -749,6 +749,10 @@ async function doRefreshUsageStatus() {
 		const parts = [];
 		if (monthSlot) parts.push(`M ${Math.round(monthSlot.ratio * 100)}%`);
 		if (h5Slot) parts.push(`5h ${Math.round(h5Slot.ratio * 100)}%`);
+		const extra = res.quota ? res.quota.extraUsage : null;
+		if (extra && typeof extra.balanceCents === "number") {
+			parts.push(`$(credit-card) ${money(extra.balanceCents, extra.currency)}`);
+		}
 		item.text = parts.length > 0 ? `$(kimi-companion-k) ${parts.join(" · ")}` : STATUS_TEXT;
 		const now = Date.now();
 		let hot = false;
