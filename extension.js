@@ -92,6 +92,16 @@ const EXT_UNITS = [
 			"const __kcW = (waiting) => { try { if (globalThis.__kimiCompanionWaiting) " +
 			"globalThis.__kimiCompanionWaiting({ waiting, sessionId: this.id, webviewIds: [...this.webviewIds] }); } catch {} }; " +
 			"__kcW(true); return this.reverseRpc.requestQuestion(request).finally(() => __kcW(false)); });"
+	},
+	{
+		// settlePrompt runs on every prompt end, including paths that never reach emitTerminal
+		// (preflight failure, error before turn.started, session close) — clears a stuck [~].
+		marker: "/*__kimiCompanionPromptSettled__*/",
+		old: "\t\tactive.settled = true;\n\t\tthis.activePrompt = void 0;\n\t\tactive.resolve(result);",
+		repl: "\t\tactive.settled = true;\n\t\tthis.activePrompt = void 0;\n\t\tactive.resolve(result);\n" +
+			"\t\t/*__kimiCompanionPromptSettled__*/ try { if (globalThis.__kimiCompanionPromptSettled) " +
+			"globalThis.__kimiCompanionPromptSettled({ status: result && result.status, sessionId: this.id, " +
+			"webviewIds: [...this.webviewIds] }); } catch {}"
 	}
 ];
 const WV_UNITS = [
@@ -158,6 +168,9 @@ function quotaUrlCandidates() {
 		return m ? m[1] : null;
 	});
 	if (cfgBase) push(cfgBase.replace(/\/+$/, "") + "/usages");
+	// Both hardcoded hosts are Moonshot's own Kimi Code endpoints — the official extension
+	// ships https://api.kimi.com/coding/v1 and https://api.kimi.ai/coding/v1 — so the token
+	// never leaves Moonshot unless the user points KIMI_CODE_BASE_URL / config.toml elsewhere.
 	push(KIMI_USAGE_URL);
 	push("https://api.kimi.ai/coding/v1/usages");
 	return urls;
@@ -199,13 +212,23 @@ const USAGE_KEY_MAP = {
 	limit_month_code: "monthCode"
 };
 
+// Server strings end up in a trusted MarkdownString tooltip — keep only plain characters
+// so a response can never inject markdown links, command URIs or HTML.
+function plainText(value, max = 40) {
+	return String(value == null ? "" : value).replace(/[^\p{L}\p{N} ._:%-]/gu, "").slice(0, max);
+}
+
+function currencyCode(value) {
+	return typeof value === "string" && /^[A-Za-z]{3}$/.test(value) ? value.toUpperCase() : "USD";
+}
+
 function quotaWindowLabel(duration, timeUnit) {
 	const n = Number(duration) || 0;
 	const minutes =
 		timeUnit === "TIME_UNIT_MINUTE" ? n :
 		timeUnit === "TIME_UNIT_HOUR" ? n * 60 :
 		timeUnit === "TIME_UNIT_DAY" ? n * 1440 : 0;
-	if (minutes === 0) return `${duration} ${timeUnit || "window"}`;
+	if (minutes === 0) return plainText(`${duration} ${timeUnit || "window"}`) || "window";
 	if (minutes % 1440 === 0) return `${minutes / 1440}-day window`;
 	if (minutes % 60 === 0) return `${minutes / 60}-hour window`;
 	return `${minutes}-minute window`;
@@ -238,8 +261,8 @@ function parseDirectQuota(d) {
 			label: quotaWindowLabel(win.duration, win.timeUnit),
 			short: durationMinutes === 300 ? "5h" : durationMinutes > 0 ? `${durationMinutes}m` : "win",
 			ratio: used / limit,
-			used: detail.used,
-			limit: detail.limit,
+			used,
+			limit,
 			resetAt: detail.resetTime || null,
 			durationMinutes
 		});
@@ -255,10 +278,10 @@ function parseDirectQuota(d) {
 			monthlyChargeLimitEnabled: monthlyLimitCents > 0,
 			monthlyChargeLimitCents: monthlyLimitCents,
 			monthlyUsedCents: bw.monthlyUsed ? Number(bw.monthlyUsed.priceInCents) || 0 : 0,
-			currency:
+			currency: currencyCode(
 				(bw.monthlyChargeLimit && bw.monthlyChargeLimit.currency) ||
-				(bw.topupLimit && bw.topupLimit.currency) ||
-				"USD"
+				(bw.topupLimit && bw.topupLimit.currency)
+			)
 		};
 	}
 	return { kind: "ok", source: "direct", windows, quota: { usages, extraUsage } };
@@ -338,7 +361,7 @@ async function fetchDeepseekBalance() {
 	if (!b) return null;
 	return {
 		available: d.is_available !== false,
-		currency: b.currency || "USD",
+		currency: currencyCode(b.currency),
 		total: Number(b.total_balance) || 0,
 		granted: Number(b.granted_balance) || 0,
 		toppedUp: Number(b.topped_up_balance) || 0
@@ -446,6 +469,15 @@ function paceInfo(slot, nowMs) {
 	return { pace, depletesInMs, resetInMs: resetMs - nowMs };
 }
 
+// Thresholds are fractions 0..1; a percent typed by hand (80) is read as 0.8 instead of
+// silently disabling the alert and the red highlight.
+function fractionSetting(cfg, key, fallback) {
+	let n = Number(cfg.get(key, fallback));
+	if (!isFinite(n) || n < 0) return fallback;
+	if (n > 1) n = n <= 100 ? n / 100 : 1;
+	return n;
+}
+
 function paceLabel(pace) {
 	return pace >= 1.25 ? "fast" : pace >= 0.8 ? "normal" : pace > 0.01 ? "slow" : "idle";
 }
@@ -460,7 +492,7 @@ function paceSummary(slot, nowMs) {
 	// Status-bar highlight follows the configured 5h threshold (default 80% of the window):
 	// the depletion forecast stays as tooltip text, only the raw ratio paints the bar,
 	// so a fast pace does not flip the color early.
-	const t5h = Number(vscode.workspace.getConfiguration("kimiCompanion").get("alertThreshold5h", 0.8));
+	const t5h = fractionSetting(vscode.workspace.getConfiguration("kimiCompanion"), "alertThreshold5h", 0.8);
 	return { text: parts.join(" · "), hot: slot.durationMinutes <= 1440 && slot.ratio >= t5h };
 }
 
@@ -468,8 +500,8 @@ async function checkQuotaAlerts(res) {
 	if (!appContext) return;
 	const cfg = vscode.workspace.getConfiguration("kimiCompanion");
 	if (cfg.get("alerts", true) === false) return;
-	const t5h = Number(cfg.get("alertThreshold5h", 0.8));
-	const tMonth = Number(cfg.get("alertThresholdMonth", 0.9));
+	const t5h = fractionSetting(cfg, "alertThreshold5h", 0.8);
+	const tMonth = fractionSetting(cfg, "alertThresholdMonth", 0.9);
 	const dsBelow = Number(cfg.get("alertDeepseekBelowUsd", 1));
 	const latched = appContext.globalState.get(ALERT_LATCH_KEY, {});
 	const now = Date.now();
@@ -530,7 +562,8 @@ function usageBar(ratio) {
 
 function money(cents, currency) {
 	const value = (Number(cents) || 0) / 100;
-	const sym = !currency || currency === "USD" ? "$" : currency === "RUB" ? "₽" : `${currency} `;
+	const code = currencyCode(currency);
+	const sym = code === "USD" ? "$" : code === "RUB" ? "₽" : `${code} `;
 	return `${sym}${value.toFixed(2)}`;
 }
 
@@ -597,7 +630,7 @@ function barPngDataUri(ratio, hot) {
 function usageTooltip(res, slots, nowMs) {
 	const md = new vscode.MarkdownString(undefined, true);
 	md.supportHtml = true;
-	md.isTrusted = true;
+	md.isTrusted = { enabledCommands: ["kimiCompanion.usage", "kimiCompanion.open"] };
 	md.appendMarkdown(`**Kimi Code**\n\n---\n\n`);
 	const order = (s) =>
 		s.id === "monthTotal" ? 0 :
@@ -684,7 +717,15 @@ function usageErrorReport(res) {
 	return lines.join("\n") + "\n";
 }
 
-async function refreshUsageStatus() {
+// Refreshes come from the timer, config changes and the menu; running them one at a time
+// keeps checkQuotaAlerts from reading the alert latch twice and firing a duplicate warning.
+let usageRefreshChain = Promise.resolve();
+function refreshUsageStatus() {
+	usageRefreshChain = usageRefreshChain.then(doRefreshUsageStatus, doRefreshUsageStatus);
+	return usageRefreshChain;
+}
+
+async function doRefreshUsageStatus() {
 	const item = statusItem;
 	if (!item) return;
 	item.backgroundColor = undefined;
@@ -717,7 +758,7 @@ async function refreshUsageStatus() {
 		}
 		item.tooltip = usageTooltip(res, slots, now);
 		item.backgroundColor = hot ? new vscode.ThemeColor("statusBarItem.errorBackground") : undefined;
-		void checkQuotaAlerts(res);
+		await checkQuotaAlerts(res).catch((err) => log.appendLine(`[alert] check failed: ${err}`));
 	} catch (err) {
 		log.appendLine(`[usage] status refresh failed: ${err}`);
 		item.text = STATUS_TEXT;
@@ -773,14 +814,15 @@ function distDir() {
 	return ext ? path.join(ext.extensionUri.fsPath, "dist") : null;
 }
 
-function unitStatus(file, unit) {
-	try {
-		return fs.readFileSync(file, "utf8").includes(unit.marker)
-			? `OK      ${unit.marker}`
-			: `MISSING ${unit.marker}`;
-	} catch {
-		return `MISSING ${unit.marker} (cannot read ${path.basename(file)})`;
-	}
+function unitStatusLines(file, units) {
+	const src = safe(() => fs.readFileSync(file, "utf8"));
+	return units.map((unit) =>
+		src === undefined
+			? `MISSING ${unit.marker} (cannot read ${path.basename(file)})`
+			: src.includes(unit.marker)
+				? `OK      ${unit.marker}`
+				: `MISSING ${unit.marker}`
+	);
 }
 
 function pinnedStatus() {
@@ -806,9 +848,10 @@ function hookStatus() {
 		"__kimiCompanionGetWebviewId",
 		"__kimiCompanionLoadSession",
 		"__kimiCompanionGetSidebarId",
-		"__kimiCompanionGetUsage",
-		"__kimiCompanionTurnSettled"
+		"__kimiCompanionGetUsage"
 	];
+	// __kimiCompanionTurnSettled / TurnStarted / Waiting / PromptSettled are defined by the
+	// companion itself, so they are always functions — the patch units above are what matter.
 	return names.map((n) => `${n}: ${typeof globalThis[n]}`);
 }
 
@@ -829,8 +872,8 @@ function diagnosticsReport(context) {
 	if (!dir) {
 		lines.push("  the Kimi extension is not installed — dist not checked");
 	} else {
-		for (const unit of EXT_UNITS) lines.push(`  ${unitStatus(path.join(dir, "extension.js"), unit)}`);
-		for (const unit of WV_UNITS) lines.push(`  ${unitStatus(path.join(dir, "webview.js"), unit)}`);
+		for (const line of unitStatusLines(path.join(dir, "extension.js"), EXT_UNITS)) lines.push(`  ${line}`);
+		for (const line of unitStatusLines(path.join(dir, "webview.js"), WV_UNITS)) lines.push(`  ${line}`);
 	}
 	lines.push("", "Hooks in globalThis");
 	for (const line of hookStatus()) lines.push(`  ${line}`);
@@ -994,7 +1037,7 @@ function playCompletionSound() {
 		if (vscode.env.uiKind !== vscode.UIKind.Desktop || vscode.env.remoteName) return;
 		const spec = SOUND_COMMAND[process.platform];
 		if (!spec) return;
-		const options = { stdio: "ignore", windowsHide: false };
+		const options = { stdio: "ignore", windowsHide: true };
 		if (process.platform === "win32") {
 			options.env = { ...process.env, KIMI_COMPANION_SOUND: COMPLETION_SOUND };
 		}
@@ -1054,6 +1097,21 @@ function updateStatusOnSettled(info) {
 	}
 }
 
+// Fallback for prompt ends that bypass emitTerminal: only a still-live [~]/[?] is resolved,
+// a status already set by the turn terminal (which fires first) is left as is.
+function updateStatusOnPromptSettled(info) {
+	try {
+		if (!info) return;
+		const status = info.status === "finished" ? "done" : info.status === "cancelled" ? null : "error";
+		for (const p of findPanelsByWebviewIds(info.webviewIds)) {
+			const current = panelStatus.get(p);
+			if (current === "running" || current === "waiting") setPanelStatus(p, status);
+		}
+	} catch (err) {
+		if (log) log.appendLine(`[status] prompt settled FAILED: ${err}`);
+	}
+}
+
 async function notifyTabCompletion(info) {
 	try {
 		const config = vscode.workspace.getConfiguration("kimiCompanion");
@@ -1086,14 +1144,17 @@ function currentEntries() {
 }
 
 function recordClosed(context, prev, now) {
-	const nowKeys = new Set(now.map((e) => `${e.title}${e.sessionId}`));
-	const gone = prev.filter((e) => e.sessionId && !nowKeys.has(`${e.title}${e.sessionId}`));
+	// Keyed by session only: auto-naming and renames change the title of a window that is
+	// still open, and must not put its session into the closed history.
+	const nowSessions = new Set(now.map((e) => e.sessionId).filter(Boolean));
+	const gone = prev.filter((e) => e.sessionId && !nowSessions.has(e.sessionId));
 	if (gone.length === 0) return;
-	const hist = context.workspaceState.get(CLOSED_KEY, []);
+	const goneSessions = new Set(gone.map((e) => e.sessionId));
+	const hist = context.workspaceState.get(CLOSED_KEY, []).filter((e) => !goneSessions.has(e.sessionId));
 	hist.push(...gone);
 	while (hist.length > CLOSED_MAX) hist.shift();
 	context.workspaceState.update(CLOSED_KEY, hist);
-	log.appendLine(`[closed] remembered: ${JSON.stringify(gone)}`);
+	if (log) log.appendLine(`[closed] remembered: ${JSON.stringify(gone)}`);
 }
 
 // --- Auto-naming windows from session topic --------------------------
@@ -1123,7 +1184,20 @@ function sessionDirOf(sessionId) {
 	return sessionDirCache.get(sessionId) || null;
 }
 
+// A session without a topic yet is re-checked every 10 s instead of on every 2 s poll.
+const NAME_RETRY_MS = 10000;
+const unnamedSessions = new Map();
+
 function deriveSessionName(sessionId) {
+	const miss = unnamedSessions.get(sessionId);
+	if (miss && Date.now() - miss < NAME_RETRY_MS) return null;
+	const name = readSessionName(sessionId);
+	if (name) unnamedSessions.delete(sessionId);
+	else unnamedSessions.set(sessionId, Date.now());
+	return name;
+}
+
+function readSessionName(sessionId) {
 	const dir = sessionDirOf(sessionId);
 	if (!dir) return null;
 	const statePath = path.isAbsolute(dir) ? path.join(dir, "state.json") : path.join(kimiHome, dir, "state.json");
@@ -1134,11 +1208,14 @@ function deriveSessionName(sessionId) {
 	return name.length > 42 ? name.slice(0, 41) + "…" : name;
 }
 
+// Panels the user renamed by hand keep their title even when it is "Kimi Code".
+const userNamedPanels = new WeakSet();
+
 function autoNamePanels() {
 	const { getWebviewId, getSessionId } = getHooks();
 	if (!getWebviewId || !getSessionId) return;
 	for (const p of getKimiPanels()) {
-		if (stripStatusMarker(p.title) !== DEFAULT_TITLE) continue;
+		if (userNamedPanels.has(p) || stripStatusMarker(p.title) !== DEFAULT_TITLE) continue;
 		const wid = safe(() => getWebviewId(p));
 		const sid = wid ? safe(() => getSessionId(wid)) : null;
 		if (!sid) continue;
@@ -1184,10 +1261,11 @@ function reconcile(context, reason) {
 
 // --- Patching the Kimi extension ------------------------------------
 
-function patchDistFile(file, units, failures) {
+// Async I/O: the Kimi dist is ~9 MB, a sync read would block the shared extension host.
+async function patchDistFile(file, units, failures) {
 	let src;
 	try {
-		src = fs.readFileSync(file, "utf8");
+		src = await fs.promises.readFile(file, "utf8");
 	} catch (err) {
 		log.appendLine(`[patch] cannot read ${file}: ${err}`);
 		return false;
@@ -1207,8 +1285,11 @@ function patchDistFile(file, units, failures) {
 	if (changed) {
 		try {
 			const bak = file + ".bak-kimi-companion";
-			if (!fs.existsSync(bak)) fs.copyFileSync(file, bak);
-			fs.writeFileSync(file, src, "utf8");
+			// COPYFILE_EXCL keeps the first (pristine) backup if one already exists.
+			await fs.promises.copyFile(file, bak, fs.constants.COPYFILE_EXCL).catch((err) => {
+				if (err.code !== "EEXIST") throw err;
+			});
+			await fs.promises.writeFile(file, src, "utf8");
 		} catch (err) {
 			log.appendLine(`[patch] write failed for ${file}: ${err}`);
 			return false;
@@ -1217,7 +1298,7 @@ function patchDistFile(file, units, failures) {
 	return changed;
 }
 
-function ensureMoonshotPatched() {
+async function ensureMoonshotPatched() {
 	const ext = vscode.extensions.getExtension(KIMI_EXT_ID);
 	if (!ext) {
 		log.appendLine("[patch] moonshot-ai.kimi-code not installed");
@@ -1225,9 +1306,9 @@ function ensureMoonshotPatched() {
 	}
 	const distDir = path.join(ext.extensionUri.fsPath, "dist");
 	const failures = [];
-	const applied =
-		patchDistFile(path.join(distDir, "extension.js"), EXT_UNITS, failures) |
-		patchDistFile(path.join(distDir, "webview.js"), WV_UNITS, failures);
+	const appliedExt = await patchDistFile(path.join(distDir, "extension.js"), EXT_UNITS, failures);
+	const appliedWv = await patchDistFile(path.join(distDir, "webview.js"), WV_UNITS, failures);
+	const applied = appliedExt || appliedWv;
 	if (failures.length > 0) {
 		vscode.window.showWarningMessage(
 			`Kimi Code Companion: the installed Kimi version changed its code (anchors: ${failures.join(", ")}). Manual repatch is required — see the extension README.`
@@ -1376,6 +1457,7 @@ async function renameWindow(context) {
 	if (!name || !name.trim()) return;
 	try {
 		panel.title = name.trim();
+		userNamedPanels.add(panel);
 		setPanelStatus(panel, panelStatus.get(panel) || null);
 		log.appendLine(`[rename] title set to "${name.trim()}"`);
 		reconcile(context, "rename");
@@ -1420,8 +1502,11 @@ function activate(context) {
 	globalThis.__kimiCompanionWaiting = (info) => {
 		setTimeout(() => updateStatusOnWaiting(info), 0);
 	};
+	globalThis.__kimiCompanionPromptSettled = (info) => {
+		setTimeout(() => updateStatusOnPromptSettled(info), 0);
+	};
 
-	ensureMoonshotPatched();
+	ensureMoonshotPatched().catch((err) => log.appendLine(`[patch] FAILED: ${err}`));
 
 	const restoreEnabled = vscode.workspace
 		.getConfiguration("kimiCompanion")
@@ -1523,6 +1608,25 @@ function deactivate() {
 	delete globalThis.__kimiCompanionTurnSettled;
 	delete globalThis.__kimiCompanionTurnStarted;
 	delete globalThis.__kimiCompanionWaiting;
+	delete globalThis.__kimiCompanionPromptSettled;
 }
 
-module.exports = { activate, deactivate };
+module.exports = {
+	activate,
+	deactivate,
+	// Pure helpers exposed for test/*.test.js (not part of the extension API).
+	_test: {
+		parseDirectQuota,
+		usageSlots,
+		paceInfo,
+		formatDuration,
+		fractionSetting,
+		money,
+		plainText,
+		quotaWindowLabel,
+		recordClosed,
+		stripStatusMarker,
+		EXT_UNITS,
+		WV_UNITS
+	}
+};

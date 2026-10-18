@@ -23,10 +23,9 @@ from xml.sax.saxutils import escape
 EXTENSION_ID = "kimi-companion"
 PUBLISHER = "lekra"
 DISPLAY_NAME = "Kimi Code Companion"
-DESCRIPTION = (
-    "Companion extension for the official Kimi Code VS Code extension: restores "
-    "Kimi windows after a reload, renames their tabs and reopens closed chats."
-)
+# Fallbacks only: the real values are read from package.nls.json / package.json so the
+# manifest cannot drift from the extension (see read_manifest_fields).
+DESCRIPTION = "Companion extension for the official Kimi Code VS Code extension."
 ENGINE = "^1.100.0"
 EXTENSION_KIND = "Workspace"
 TAGS = "kimi,kimi-code,moonshot,ai,assistant"
@@ -41,6 +40,7 @@ CONTENT_TYPES = [
     ("svg", "image/svg+xml"),
     ("png", "image/png"),
     ("woff", "application/font-woff"),
+    ("wav", "audio/wav"),
     ("txt", "text/plain"),
 ]
 
@@ -129,7 +129,7 @@ def make_content_types(files):
     return "\n".join(lines) + "\n"
 
 
-def make_manifest(version):
+def make_manifest(version, description, engine):
     return (
         '<?xml version="1.0" encoding="utf-8"?>\n'
         '<PackageManifest Version="2.0.0"'
@@ -161,12 +161,26 @@ def make_manifest(version):
         escape(version),
         escape(PUBLISHER),
         escape(DISPLAY_NAME),
-        escape(DESCRIPTION),
+        escape(description),
         escape(TAGS),
         escape(CATEGORIES),
-        escape(ENGINE),
+        escape(engine),
         escape(EXTENSION_KIND),
     )
+
+
+def read_manifest_fields(repo_root, package):
+    """Return (description, engine) as the extension itself declares them."""
+    description = DESCRIPTION
+    nls_path = os.path.join(repo_root, "package.nls.json")
+    if os.path.isfile(nls_path):
+        with open(nls_path, "r", encoding="utf-8") as handle:
+            description = json.load(handle).get("description") or description
+    raw = package.get("description")
+    if raw and not raw.startswith("%"):
+        description = raw
+    engine = (package.get("engines") or {}).get("vscode") or ENGINE
+    return description, engine
 
 
 def human_size(size):
@@ -220,7 +234,10 @@ def main(argv):
 
     with zipfile.ZipFile(out_path, "w", zipfile.ZIP_DEFLATED) as archive:
         archive.writestr("[Content_Types].xml", make_content_types(files))
-        archive.writestr("extension.vsixmanifest", make_manifest(version))
+        description, engine = read_manifest_fields(repo_root, package)
+        archive.writestr(
+            "extension.vsixmanifest", make_manifest(version, description, engine)
+        )
         for name in files:
             archive.write(
                 os.path.join(repo_root, name),

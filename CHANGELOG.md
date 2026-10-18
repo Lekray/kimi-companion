@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.7.1] - 2026-10-18
+
+### Fixed
+
+- "Reopen closed window" no longer fills up with windows that are still open: closed history is keyed by session, so auto-naming or renaming a window does not record its old title as a closed window (and a session closed twice is kept once).
+- A `[~]` / `[?]` tab marker no longer sticks when a prompt ends without a turn terminal (failure before the turn starts, early error, session close): a twelfth patch (`/*__kimiCompanionPromptSettled__*/` on `settlePrompt`) resolves it to `[V]` / `[!]` / no marker.
+- Windows: the completion chime no longer flashes a PowerShell console window (`windowsHide: true`).
+- Duplicate quota warnings: status refreshes from the timer, settings changes and the menu now run one at a time, so the alert latch is never read twice.
+- A threshold typed as a percent (`80`) is read as `0.8` instead of silently disabling the alert and the red highlight; the settings now declare `minimum` / `maximum`.
+- A window renamed by hand to "Kimi Code" is no longer overwritten by auto-naming.
+
+### Security
+
+- The status bar tooltip trusts only the two commands it links to (`kimiCompanion.usage`, `kimiCompanion.open`) instead of all commands, and server-provided window labels, counters and currency codes are reduced to plain text before they reach it.
+
+### Changed
+
+- The Kimi dist (~9 MB) is read and patched asynchronously, so activation no longer blocks the shared extension host; Diagnostics reads each dist file once instead of once per patch unit, and a session without a topic is re-checked for its name every 10 s instead of every 2 s poll.
+- Diagnostics lists only the hooks installed by the patches (the companion's own callbacks are always present and told nothing).
+- Offline unit tests (`node --test "test/**/*.test.js"`) for quota parsing, slot selection, pace, thresholds, closed history, status markers and patch-unit consistency; run in CI and by `scripts/release.ps1`.
+- `scripts/build-vsix.py` registers the `wav` content type and takes the manifest description and engine from `package.nls.json` / `package.json` instead of hardcoded copies.
+- README (en / ru / zh-cn): the status bar menu and the red highlight are described as they actually work since 1.6.2, `kimiCompanion.tabStatusMarkers` is listed under Settings, and the patch table has the twelfth unit.
+
 ## [1.7.0] - 2026-10-18
 
 ### Added
@@ -122,6 +145,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Self-healing patches for the Kimi extension.
 - Recommended pinned Kimi extension version.
 
+[1.7.1]: https://github.com/Lekray/kimi-companion/compare/v1.7.0...v1.7.1
 [1.7.0]: https://github.com/Lekray/kimi-companion/compare/v1.6.2...v1.7.0
 [1.6.2]: https://github.com/Lekray/kimi-companion/compare/v1.6.1...v1.6.2
 [1.6.1]: https://github.com/Lekray/kimi-companion/compare/v1.6.0...v1.6.1

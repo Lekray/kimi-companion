@@ -123,6 +123,10 @@ console.log("package.json version -> " + version);
     Assert-LastExit 'node --check extension.js'
     Write-Log '           extension.js syntax ok'
 
+    node --test 'test/**/*.test.js'
+    Assert-LastExit 'unit tests (node --test)'
+    Write-Log '           unit tests ok'
+
     $jsonFiles = @(Get-ChildItem -LiteralPath $RepoRoot -Filter '*.json' -File |
                    Sort-Object Name | ForEach-Object { $_.Name })
     if ($jsonFiles.Count -eq 0) {

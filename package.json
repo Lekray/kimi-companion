@@ -79,16 +79,21 @@
 				"kimiCompanion.alertThreshold5h": {
 					"type": "number",
 					"default": 0.8,
+					"minimum": 0,
+					"maximum": 1,
 					"description": "%config.alert5h.description%"
 				},
 				"kimiCompanion.alertThresholdMonth": {
 					"type": "number",
 					"default": 0.9,
+					"minimum": 0,
+					"maximum": 1,
 					"description": "%config.alertMonth.description%"
 				},
 				"kimiCompanion.alertDeepseekBelowUsd": {
 					"type": "number",
 					"default": 1,
+					"minimum": 0,
 					"description": "%config.deepseekBelow.description%"
 				}
 			}

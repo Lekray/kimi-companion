@@ -28,6 +28,10 @@ jobs:
         shell: bash
         run: node --check extension.js
 
+      - name: Unit tests
+        shell: bash
+        run: node --test "test/**/*.test.js"
+
       - name: Validate JSON files
         shell: bash
         run: |
