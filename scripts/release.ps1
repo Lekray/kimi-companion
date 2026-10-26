@@ -164,7 +164,7 @@ process.exit(bad ? 1 : 0);
     # step 5 - local install (destructive: replaces the version folder, drops older ones)
     # ----------------------------------------------------------------------
     Write-Log "step 5/8 installing locally into $ExtDir"
-    Write-Log '           the target folder is deleted and recreated, then filled from the working copy'
+    Write-Log '           the target folder is deleted and recreated, then filled from the vsix just built'
     if (Test-Path -LiteralPath $ExtDir) {
         try {
             Remove-Item -LiteralPath $ExtDir -Recurse -Force
@@ -174,29 +174,63 @@ process.exit(bad ? 1 : 0);
     }
     New-Item -ItemType Directory -Path $ExtDir -Force | Out-Null
 
-    $payload = @('package.json', 'extension.js', 'README.md', 'README.ru.md',
-                 'README.zh-CN.md', 'LICENSE', 'NOTICE')
-    $payload += @(Get-ChildItem -LiteralPath $RepoRoot -Filter 'package.nls*.json' -File |
-                  Sort-Object Name | ForEach-Object { $_.Name })
-    foreach ($name in $payload) {
-        $source = Join-Path $RepoRoot $name
-        if (Test-Path -LiteralPath $source) {
-            Copy-Item -LiteralPath $source -Destination $ExtDir -Force
-            Write-Log "           + $name"
-        } else {
-            Write-Log "           ! $name missing - skipped"
-        }
-    }
+    # The local install is unpacked from the vsix itself, so the installed folder
+    # holds exactly what the published package holds - docs/, CHANGELOG.md and
+    # resources/ included - instead of a hand-kept payload list that can drift.
+    $extractScript = Join-Path $TempDir 'extract-vsix.py'
+    Set-Content -LiteralPath $extractScript -Encoding ASCII -Value @'
+import json
+import os
+import sys
+import zipfile
 
-    $resourcesSource = Join-Path $RepoRoot 'resources'
-    if (Test-Path -LiteralPath $resourcesSource) {
-        robocopy $resourcesSource (Join-Path $ExtDir 'resources') /MIR /NFL /NDL /NJH /NJS /NP | Out-Null
-        # robocopy reports success with exit codes 0..7, everything >= 8 is a failure
-        if ($LASTEXITCODE -ge 8) {
-            throw "[release] robocopy resources failed with exit code $LASTEXITCODE"
-        }
-        Write-Log '           + resources\ (mirrored)'
-    }
+vsix, destination, expected = sys.argv[1:4]
+
+if not os.path.isfile(vsix):
+    sys.exit("vsix not found: " + vsix)
+
+
+def safe_join(root, relative):
+    target = os.path.abspath(os.path.join(root, relative))
+    if target != root and not target.startswith(root + os.sep):
+        sys.exit("refusing to write outside the install folder: " + relative)
+    return target
+
+
+root = os.path.abspath(destination)
+written = []
+
+with zipfile.ZipFile(vsix) as archive:
+    for name in archive.namelist():
+        if not name.startswith("extension/") or name.endswith("/"):
+            continue
+        relative = name[len("extension/"):]
+        target = safe_join(root, relative)
+        parent = os.path.dirname(target)
+        if parent and not os.path.isdir(parent):
+            os.makedirs(parent)
+        with archive.open(name) as source, open(target, "wb") as handle:
+            handle.write(source.read())
+        written.append(relative)
+
+    try:
+        packaged = json.loads(archive.read("extension/package.json").decode("utf-8"))
+    except KeyError:
+        sys.exit("the vsix has no extension/package.json")
+
+for required in ("package.json", "extension.js"):
+    if required not in written:
+        sys.exit("the vsix is missing " + required)
+
+version = str(packaged.get("version", ""))
+if version != expected:
+    sys.exit("the vsix carries version %s but this release is %s"
+             % (version or "<missing>", expected))
+
+print("[release]           unpacked %d files (version %s)" % (len(written), version))
+'@
+    python $extractScript $VsixPath $ExtDir $Version
+    Assert-LastExit 'vsix extraction'
 
     Write-Log "           deleting stale $Publisher.$RepoName-* folders except $ExtDirName"
     $stale = @(Get-ChildItem -LiteralPath $ExtRoot -Directory -Filter "$Publisher.$RepoName-*" -ErrorAction SilentlyContinue |

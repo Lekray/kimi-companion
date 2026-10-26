@@ -1,4 +1,4 @@
-// Offline tests for the pure helpers of extension.js: node --test test/
+// Offline tests for the pure helpers of extension.js: node --test "test/**/*.test.js"
 // The `vscode` module only exists inside the extension host, so a minimal stub is injected.
 const test = require("node:test");
 const assert = require("node:assert/strict");
@@ -9,6 +9,8 @@ const config = {};
 const vscodeStub = {
 	env: { language: "en" },
 	workspace: { getConfiguration: () => ({ get: (key, def) => (key in config ? config[key] : def) }) },
+	window: { showWarningMessage: () => Promise.resolve(undefined) },
+	commands: { executeCommand: () => Promise.resolve(undefined) },
 	MarkdownString: class {},
 	ThemeColor: class {}
 };
@@ -127,6 +129,21 @@ test("recordClosed remembers a closed session once, newest last, capped at 5", (
 	assert.equal(ctx.state.kimiClosedHistory[3].title, "again");
 });
 
+test("recordClosed deduplicates repeated views of one closed session", () => {
+	const ctx = fakeContext();
+	x.recordClosed(ctx, [
+		{ title: "first", sessionId: "same", column: 1 },
+		{ title: "last", sessionId: "same", column: 2 }
+	], []);
+	assert.deepEqual(ctx.state.kimiClosedHistory, [{ title: "last", sessionId: "same", column: 2 }]);
+});
+
+test("a missing booster balance stays unknown instead of becoming zero", () => {
+	const res = x.parseDirectQuota({ boosterWallet: { balance: { amount: 2000000000 } } });
+	assert.equal(res.quota.extraUsage.balanceCents, null);
+	assert.equal(res.quota.extraUsage.totalCents, 2000);
+});
+
 test("status markers are stripped, user titles that only look similar are kept", () => {
 	assert.equal(x.stripStatusMarker("[~] Fix the bug"), "Fix the bug");
 	assert.equal(x.stripStatusMarker("[?] Kimi Code"), "Kimi Code");
@@ -160,4 +177,125 @@ test("patch units apply cleanly, in order, to text holding each anchor once", ()
 		src = src.replace(u.old, u.repl);
 	}
 	for (const u of x.EXT_UNITS) assert.ok(src.includes(u.marker), `${u.marker} applied`);
+});
+
+function installHooks(panels) {
+	globalThis.__kimiCompanionPanels = panels;
+	globalThis.__kimiCompanionGetWebviewId = (panel) => panel.webviewId;
+	globalThis.__kimiCompanionGetSessionId = (wid) => panels.find((p) => p.webviewId === wid)?.sessionId || null;
+	globalThis.__kimiCompanionLoadSession = () => {};
+}
+
+function clearHooks() {
+	for (const key of ["__kimiCompanionPanels", "__kimiCompanionGetWebviewId", "__kimiCompanionGetSessionId", "__kimiCompanionLoadSession"]) delete globalThis[key];
+}
+
+test("reconcile preserves saved entries when restore is disabled or hooks are unavailable", () => {
+	const saved = [{ title: "saved", sessionId: "s1", column: 1 }];
+	const ctx = fakeContext();
+	ctx.state.kimiTabEntries = saved;
+	x.setStateForTests({ restoreEnabledForSession: false, startupDone: true, restoringWindows: false, restoringSidebar: false, restoreHadFailure: false, windowLease: { isOwner: true }, lastPersisted: JSON.stringify(saved), log: { appendLine() {} } });
+	installHooks([]);
+	x.reconcile(ctx, "test-disabled");
+	assert.deepEqual(ctx.state.kimiTabEntries, saved);
+	x.setStateForTests({ restoreEnabledForSession: true });
+	clearHooks();
+	x.reconcile(ctx, "test-no-hooks");
+	assert.deepEqual(ctx.state.kimiTabEntries, saved);
+	clearHooks();
+});
+
+test("reconcile persists a verified snapshot only for the lease owner", () => {
+	const panel = { title: "custom", webviewId: "w1", sessionId: "s1", viewColumn: 1 };
+	installHooks([panel]);
+	const ctx = fakeContext();
+	x.setStateForTests({ restoreEnabledForSession: true, startupDone: true, restoringWindows: false, restoringSidebar: false, restoreHadFailure: false, windowLease: { isOwner: true }, lastPersisted: "[]", log: { appendLine() {} } });
+	x.reconcile(ctx, "test-owner");
+	assert.equal(ctx.state.kimiTabEntries[0].sessionId, "s1");
+	x.setStateForTests({ windowLease: { isOwner: false }, lastPersisted: "[]" });
+	ctx.state.kimiTabEntries = [{ title: "other", sessionId: "other", column: 1 }];
+	x.reconcile(ctx, "test-nonowner");
+	assert.equal(ctx.state.kimiTabEntries[0].sessionId, "other");
+	clearHooks();
+});
+
+test("failed reopen keeps the closed-history entry", async () => {
+	const entry = { title: "closed", sessionId: "s1", column: 1 };
+	const ctx = fakeContext([entry]);
+	installHooks([]);
+	x.setStateForTests({ activationDisposed: false, restoreEnabledForSession: false, log: { appendLine() {} } });
+	vscodeStub.commands.executeCommand = () => Promise.reject(new Error("not ready"));
+	await x.reopenClosed(ctx);
+	assert.deepEqual(ctx.state.kimiClosedHistory, [entry]);
+	clearHooks();
+});
+
+test("concurrent open commands cannot mix titles and columns", async () => {
+	const panels = [];
+	installHooks(panels);
+	x.setStateForTests({ activationDisposed: false, restoreEnabledForSession: false, log: { appendLine() {} } });
+	vscodeStub.commands.executeCommand = async () => {
+		const title = globalThis.__kimiCompanionNextTitle;
+		const column = globalThis.__kimiCompanionNextColumn;
+		await new Promise((resolve) => setTimeout(resolve, 2));
+		panels.push({ title, viewColumn: column, webviewId: title, sessionId: title });
+	};
+	const ctx = fakeContext();
+	const first = x.openKimiTab(ctx, "test", "one", 1);
+	const second = x.openKimiTab(ctx, "test", "two", 2);
+	const opened = await Promise.all([first, second]);
+	assert.deepEqual(opened.map((p) => p.title), ["one", "two"]);
+	assert.deepEqual(panels.map((p) => [p.title, p.viewColumn]), [["one", 1], ["two", 2]]);
+	assert.equal(globalThis.__kimiCompanionNextTitle, undefined);
+	clearHooks();
+});
+
+test("quota alerts still run when usage is hidden from the status bar", async () => {
+	Object.assign(config, { usageInStatusBar: false, deepseekBalance: false, alerts: true });
+	let warnings = 0;
+	vscodeStub.window.showWarningMessage = () => {
+		warnings++;
+		return Promise.resolve(undefined);
+	};
+	const stored = {};
+	globalThis.__kimiCompanionGetUsage = () => Promise.resolve({ kind: "ok", windows: [], quota: { usages: { monthTotal: { usedRatio: 0.95 } } } });
+	x.setStateForTests({
+		activationDisposed: false,
+		statusItem: {},
+		usageCache: { data: null, at: 0 },
+		appContext: { globalState: { get: (_key, fallback) => fallback, update: (key, value) => { stored[key] = value; } } },
+		log: { appendLine() {} }
+	});
+	try {
+		await x.doRefreshUsageStatus();
+		assert.equal(warnings, 1);
+		assert.ok(stored.kimiQuotaAlertLatch.month);
+	} finally {
+		delete globalThis.__kimiCompanionGetUsage;
+		for (const key of ["usageInStatusBar", "deepseekBalance", "alerts"]) delete config[key];
+	}
+});
+
+test("quota alerts re-arm without resetAt after usage falls below the threshold", async () => {
+	Object.assign(config, { alerts: true, alertThresholdMonth: 0.9 });
+	let warnings = 0;
+	vscodeStub.window.showWarningMessage = () => {
+		warnings++;
+		return Promise.resolve(undefined);
+	};
+	const latch = {};
+	x.setStateForTests({
+		appContext: { globalState: { get: () => latch, update: () => {} } },
+		log: { appendLine() {} }
+	});
+	const response = (ratio) => ({ kind: "ok", windows: [], quota: { usages: { monthTotal: { usedRatio: ratio } } } });
+	try {
+		await x.checkQuotaAlerts(response(0.95));
+		await x.checkQuotaAlerts(response(0.95));
+		await x.checkQuotaAlerts(response(0.5));
+		await x.checkQuotaAlerts(response(0.96));
+		assert.equal(warnings, 2);
+	} finally {
+		for (const key of ["alerts", "alertThresholdMonth"]) delete config[key];
+	}
 });

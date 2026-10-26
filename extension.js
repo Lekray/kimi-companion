@@ -4,6 +4,12 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 const zlib = require("zlib");
+const { randomUUID } = require("crypto");
+const { PatchDistManager } = require("./lib/patch-dist");
+const { OpenChatsController } = require("./lib/open-chats");
+const { WindowLease } = require("./lib/window-lease");
+const { fetchWithTimeout, cancelPendingRequests } = require("./lib/http");
+const { usageFreshness, FiveHourSourceTracker } = require("./lib/usage-state");
 
 const KIMI_EXT_ID = "moonshot-ai.kimi-code";
 const ENTRIES_KEY = "kimiTabEntries";
@@ -119,8 +125,51 @@ let log;
 let lastPersisted = "[]";
 let lastSidebarSession = null;
 let startupDone = false;
+let activationDisposed = false;
+let restoringWindows = false;
+let restoringSidebar = false;
+let restoreHadFailure = false;
+let restoreEnabledForSession = false;
+let windowLease = null;
+let openChats = null;
+let patchManager = null;
+let lastPatchReport = null;
+const pendingDelays = new Set();
+const fiveHourSource = new FiveHourSourceTracker();
 
-const delay = (ms) => new Promise((r) => setTimeout(r, ms));
+function delay(ms) {
+	if (activationDisposed) return Promise.resolve(false);
+	return new Promise((resolve) => {
+		const pending = { timer: null, resolve };
+		pending.timer = setTimeout(() => {
+			pendingDelays.delete(pending);
+			resolve(!activationDisposed);
+		}, ms);
+		pendingDelays.add(pending);
+	});
+}
+
+function cancelPendingDelays() {
+	for (const pending of pendingDelays) {
+		clearTimeout(pending.timer);
+		pending.resolve(false);
+	}
+	pendingDelays.clear();
+}
+
+function hooksAvailable() {
+	const hooks = getHooks();
+	return !!(hooks.getWebviewId && hooks.getSessionId && hooks.loadSession);
+}
+
+function isRestoring() {
+	return restoringWindows || restoringSidebar;
+}
+
+function canPersistState() {
+	return restoreEnabledForSession && startupDone && !isRestoring() && !restoreHadFailure && hooksAvailable() && !!windowLease && windowLease.isOwner;
+}
+
 const safe = (fn) => {
 	try {
 		return fn();
@@ -158,7 +207,17 @@ function usageDebug(msg) {
 function quotaUrlCandidates() {
 	const urls = [];
 	const push = (u) => {
-		if (u && !urls.includes(u)) urls.push(u);
+		if (!u) return;
+		try {
+			const parsed = new URL(u);
+			if (parsed.protocol !== "https:") {
+				usageDebug(`direct: rejected non-HTTPS endpoint ${parsed.origin}`);
+				return;
+			}
+			if (!urls.includes(u)) urls.push(u);
+		} catch {
+			usageDebug("direct: rejected malformed endpoint");
+		}
 	};
 	const env = process.env.KIMI_CODE_BASE_URL;
 	if (env) push(env.replace(/\/+$/, "") + "/usages");
@@ -168,9 +227,6 @@ function quotaUrlCandidates() {
 		return m ? m[1] : null;
 	});
 	if (cfgBase) push(cfgBase.replace(/\/+$/, "") + "/usages");
-	// Both hardcoded hosts are Moonshot's own Kimi Code endpoints — the official extension
-	// ships https://api.kimi.com/coding/v1 and https://api.kimi.ai/coding/v1 — so the token
-	// never leaves Moonshot unless the user points KIMI_CODE_BASE_URL / config.toml elsewhere.
 	push(KIMI_USAGE_URL);
 	push("https://api.kimi.ai/coding/v1/usages");
 	return urls;
@@ -270,7 +326,7 @@ function parseDirectQuota(d) {
 	let extraUsage = null;
 	const bw = d.booster_wallet || d.boosterWallet;
 	if (bw && bw.balance) {
-		const cents8 = (v) => Math.round((Number(v) || 0) / 1e6);
+		const cents8 = (v) => v === null || v === undefined || v === "" || !Number.isFinite(Number(v)) ? null : Math.round(Number(v) / 1e6);
 		const monthlyLimitCents = bw.monthlyChargeLimit ? Number(bw.monthlyChargeLimit.priceInCents) || 0 : 0;
 		extraUsage = {
 			balanceCents: cents8(bw.balance.amountLeft),
@@ -314,7 +370,7 @@ async function fetchKimiQuotaDirect() {
 		: quotaUrlCandidates();
 	for (const url of urls) {
 		try {
-			const resp = await fetch(url, {
+			const resp = await fetchWithTimeout(url, {
 				headers: { Authorization: `Bearer ${tok.access_token}`, Accept: "application/json" }
 			});
 			if (!resp.ok) {
@@ -350,9 +406,10 @@ function deepseekApiKey() {
 }
 
 async function fetchDeepseekBalance() {
+	if (vscode.workspace.getConfiguration("kimiCompanion").get("deepseekBalance", true) === false) return null;
 	const key = deepseekApiKey();
 	if (!key) return null;
-	const resp = await fetch(DEEPSEEK_BALANCE_URL, {
+	const resp = await fetchWithTimeout(DEEPSEEK_BALANCE_URL, {
 		headers: { Authorization: `Bearer ${key}`, Accept: "application/json" }
 	});
 	if (!resp.ok) return null;
@@ -371,26 +428,24 @@ async function fetchDeepseekBalance() {
 async function getUsage(force) {
 	if (!force && usageCache.data && Date.now() - usageCache.at < USAGE_CACHE_MS) return usageCache.data;
 	let res = null;
-	try {
-		res = await fetchKimiQuotaDirect();
-	} catch (err) {
-		usageDebug(`direct quota fetch failed: ${err}`);
-	}
-	if (!res) {
-		const fn = globalThis.__kimiCompanionGetUsage;
-		if (typeof fn === "function") {
-			try {
-				res = await fn(USAGE_PROVIDER);
-				if (res && res.kind === "ok") {
-					const uk = res.quota && res.quota.usages ? Object.keys(res.quota.usages) : [];
-					usageDebug(`hook -> usages keys: ${uk.join(",") || "(none)"}`);
-				}
-			} catch (err) {
-				usageDebug(`hook threw: ${err}`);
-				res = null;
+	const fn = globalThis.__kimiCompanionGetUsage;
+	if (typeof fn === "function") {
+		try {
+			res = await fn(USAGE_PROVIDER);
+			if (res && res.kind === "ok") {
+				const uk = res.quota && res.quota.usages ? Object.keys(res.quota.usages) : [];
+				usageDebug(`hook -> usages keys: ${uk.join(",") || "(none)"}`);
 			}
-		} else {
-			usageDebug("hook not installed — is the Kimi extension patched? (run Diagnostics)");
+		} catch (err) {
+			usageDebug(`hook threw: ${err}`);
+			res = null;
+		}
+	}
+	if (!res || res.kind !== "ok") {
+		try {
+			res = await fetchKimiQuotaDirect();
+		} catch (err) {
+			usageDebug(`direct quota fetch failed: ${err}`);
 		}
 	}
 	if (res && res.kind === "ok") {
@@ -400,7 +455,13 @@ async function getUsage(force) {
 			usageDebug(`deepseek balance failed: ${err}`);
 			res.deepseek = null;
 		}
-		usageCache = { data: res, at: Date.now() };
+		res.updatedAt = Date.now();
+		const preferOfficial = fiveHourSource.track(res);
+		res.preferOfficial5h = preferOfficial;
+		if (!preferOfficial && res.quota && res.quota.usages && res.quota.usages.limit5h) {
+			usageDebug("5h: official value is stale or frozen; using the live wire counter");
+		}
+		usageCache = { data: res, at: res.updatedAt };
 	}
 	return res;
 }
@@ -410,9 +471,10 @@ function usageSlots(res) {
 	const windows = res && Array.isArray(res.windows) ? res.windows : [];
 	const usages = res && res.quota && res.quota.usages ? res.quota.usages : {};
 	const official5h = usages.limit5h && typeof usages.limit5h.usedRatio === "number" ? usages.limit5h : null;
-	// The official limit_5h has been stale-zero, stale-frozen and absent across API revisions;
-	// trust it only while it actually moves (non-zero). Otherwise the live wire counter wins.
-	const useOfficial5h = !!official5h && official5h.usedRatio > 0;
+	// The tracker detects a frozen official value by comparing successive responses.
+	const useOfficial5h = !!official5h && (typeof res.preferOfficial5h === "boolean"
+		? res.preferOfficial5h
+		: official5h.usedRatio > 0);
 	let has5hWindow = false;
 	for (const w of windows) {
 		if (w.durationMinutes === 300 && useOfficial5h) continue; // official field supersedes the wire counter
@@ -517,13 +579,23 @@ async function checkQuotaAlerts(res) {
 	};
 	for (const s of usageSlots(res)) {
 		const pi = paceInfo(s, now);
-		if ((s.id === "win300" || s.id === "limit5h") && s.ratio >= t5h) {
-			const eta = pi && pi.depletesInMs != null ? ` — depletes in ~${formatDuration(pi.depletesInMs)}` : "";
-			const left = pi ? `, resets in ${formatDuration(pi.resetInMs)}` : "";
-			fire("5h", s.resetAt || "?", `Kimi quota: 5-hour window is ${Math.round(s.ratio * 100)}% used${eta}${left}.`);
+		if (s.id === "win300" || s.id === "limit5h") {
+			if (s.ratio >= t5h) {
+				const eta = pi && pi.depletesInMs != null ? ` — depletes in ~${formatDuration(pi.depletesInMs)}` : "";
+				const left = pi ? `, resets in ${formatDuration(pi.resetInMs)}` : "";
+				fire("5h", s.resetAt || "?", `Kimi quota: 5-hour window is ${Math.round(s.ratio * 100)}% used${eta}${left}.`);
+			} else if (latched["5h"] && s.ratio < t5h * 0.9) {
+				delete latched["5h"];
+				dirty = true;
+			}
 		}
-		if (s.id === "monthTotal" && s.ratio >= tMonth) {
-			fire("month", s.resetAt || "?", `Kimi quota: monthly limit is ${Math.round(s.ratio * 100)}% used (resets ${resetStamp(s.resetAt, true) || "?"}).`);
+		if (s.id === "monthTotal") {
+			if (s.ratio >= tMonth) {
+				fire("month", s.resetAt || "?", `Kimi quota: monthly limit is ${Math.round(s.ratio * 100)}% used (resets ${resetStamp(s.resetAt, true) || "?"}).`);
+			} else if (latched.month && s.ratio < tMonth * 0.9) {
+				delete latched.month;
+				dirty = true;
+			}
 		}
 	}
 	const ds = res.deepseek;
@@ -629,9 +701,11 @@ function barPngDataUri(ratio, hot) {
 
 function usageTooltip(res, slots, nowMs) {
 	const md = new vscode.MarkdownString(undefined, true);
-	md.supportHtml = true;
 	md.isTrusted = { enabledCommands: ["kimiCompanion.usage", "kimiCompanion.open"] };
 	md.appendMarkdown(`**Kimi Code**\n\n---\n\n`);
+	const freshness = usageFreshness(res, slots, nowMs);
+	if (freshness === "stale") md.appendMarkdown(`${T.stale}\n\n---\n\n`);
+	else if (freshness === "refresh-needed") md.appendMarkdown(`${T.refreshNeeded}\n\n---\n\n`);
 	const order = (s) =>
 		s.id === "monthTotal" ? 0 :
 		s.id === "win300" || s.id === "limit5h" ? 1 :
@@ -641,13 +715,13 @@ function usageTooltip(res, slots, nowMs) {
 		const reset = resetStamp(s.resetAt, true);
 		md.appendMarkdown(`**${slotTitle(s)}**${reset ? ` — ${T.resetShort} ${reset}` : ""}\n\n`);
 		md.appendMarkdown(`### **${Math.round(s.ratio * 100)}%** _${T.used}_${s.counter ? ` (${s.counter})` : ""}\n\n`);
-		md.appendMarkdown(`![${Math.round(s.ratio * 100)}%](${barPngDataUri(s.ratio, !!(ps && ps.hot))})\n\n`);
+		md.appendMarkdown(`![${Math.round(s.ratio * 100)}%](${barPngDataUri(s.ratio, freshness === "fresh" && !!(ps && ps.hot))})\n\n`);
 		if (ps) md.appendMarkdown(`${ps.text}\n\n`);
 		md.appendMarkdown(`---\n\n`);
 	}
 	const extra = res.quota && res.quota.extraUsage ? res.quota.extraUsage : null;
 	const bits = [];
-	if (extra) {
+	if (extra && typeof extra.balanceCents === "number") {
 		bits.push(`**${T.booster}:** ${T.leftFmt(money(extra.balanceCents, extra.currency), money(extra.totalCents, extra.currency))}`);
 	}
 	const ds = res.deepseek;
@@ -663,7 +737,7 @@ function usageTooltip(res, slots, nowMs) {
 
 function extraUsageLines(res) {
 	const extra = res && res.quota ? res.quota.extraUsage : null;
-	if (!extra) return [];
+	if (!extra || typeof extra.balanceCents !== "number") return [];
 	const cur = extra.currency;
 	const left = money(extra.balanceCents, cur);
 	const total = money(extra.totalCents, cur);
@@ -675,8 +749,14 @@ function extraUsageLines(res) {
 }
 
 function usageReport(res) {
-	const lines = ["Kimi Code subscription usage (api.kimi.com)", `Updated: ${localStamp(new Date())}`, ""];
 	const slots = usageSlots(res);
+	const freshness = usageFreshness(res, slots);
+	const lines = [
+		"Kimi Code subscription usage (api.kimi.com)",
+		`Updated: ${localStamp(new Date(res.updatedAt || Date.now()))}`,
+		`Freshness: ${freshness}`,
+		""
+	];
 	if (slots.length === 0) lines.push("The response contains no limit data.");
 	for (const s of slots) {
 		const reset = resetStamp(s.resetAt, true);
@@ -717,56 +797,69 @@ function usageErrorReport(res) {
 	return lines.join("\n") + "\n";
 }
 
-// Refreshes come from the timer, config changes and the menu; running them one at a time
-// keeps checkQuotaAlerts from reading the alert latch twice and firing a duplicate warning.
-let usageRefreshChain = Promise.resolve();
+// At most one request is in flight; triggers during it coalesce into one reread.
+let usageRefreshPromise = null;
+let usageRefreshQueued = false;
 function refreshUsageStatus() {
-	usageRefreshChain = usageRefreshChain.then(doRefreshUsageStatus, doRefreshUsageStatus);
-	return usageRefreshChain;
+	if (usageRefreshPromise) {
+		usageRefreshQueued = true;
+		return usageRefreshPromise;
+	}
+	usageRefreshPromise = (async () => {
+		do {
+			usageRefreshQueued = false;
+			await doRefreshUsageStatus();
+		} while (usageRefreshQueued && !activationDisposed);
+	})().finally(() => {
+		usageRefreshPromise = null;
+	});
+	return usageRefreshPromise;
 }
 
 async function doRefreshUsageStatus() {
 	const item = statusItem;
-	if (!item) return;
-	item.backgroundColor = undefined;
-	const enabled =
-		vscode.workspace.getConfiguration("kimiCompanion").get("usageInStatusBar", true) !== false;
-	if (!enabled) {
-		item.text = STATUS_TEXT;
-		item.tooltip = "Kimi Code";
-		return;
-	}
+	if (!item || activationDisposed) return;
+	const previous = usageCache.data;
 	try {
-		const res = await getUsage(false);
-		if (!res || res.kind !== "ok") {
+		const fresh = await getUsage(false);
+		const res = fresh && fresh.kind === "ok" ? fresh : previous;
+		const now = Date.now();
+		if (fresh && fresh.kind === "ok" && usageFreshness(fresh, usageSlots(fresh), now) === "fresh") {
+			await checkQuotaAlerts(fresh).catch((err) => log.appendLine(`[alert] check failed: ${err}`));
+		}
+		const enabled = vscode.workspace.getConfiguration("kimiCompanion").get("usageInStatusBar", true) !== false;
+		if (!enabled || !res || res.kind !== "ok") {
 			item.text = STATUS_TEXT;
 			item.tooltip = "Kimi Code";
+			item.backgroundColor = undefined;
 			return;
 		}
 		const slots = usageSlots(res);
+		const freshness = usageFreshness(res, slots, now);
 		const monthSlot = slots.find((s) => s.id === "monthTotal");
 		const h5Slot = slots.find((s) => s.id === "win300" || s.id === "limit5h");
 		const parts = [];
 		if (monthSlot) parts.push(`M ${Math.round(monthSlot.ratio * 100)}%`);
 		if (h5Slot) parts.push(`5h ${Math.round(h5Slot.ratio * 100)}%`);
 		const extra = res.quota ? res.quota.extraUsage : null;
-		if (extra && typeof extra.balanceCents === "number") {
-			parts.push(`$(credit-card) ${money(extra.balanceCents, extra.currency)}`);
-		}
+		if (extra && typeof extra.balanceCents === "number") parts.push(`$(credit-card) ${money(extra.balanceCents, extra.currency)}`);
+		if (freshness === "stale") parts.push(T.stale);
+		else if (freshness === "refresh-needed") parts.push(T.refreshNeeded);
 		item.text = parts.length > 0 ? `$(kimi-companion-k) ${parts.join(" · ")}` : STATUS_TEXT;
-		const now = Date.now();
 		let hot = false;
-		for (const s of slots) {
-			const ps = paceSummary(s, now);
-			if (ps && ps.hot) hot = true;
+		if (freshness === "fresh") {
+			for (const s of slots) {
+				const ps = paceSummary(s, now);
+				if (ps && ps.hot) hot = true;
+			}
 		}
 		item.tooltip = usageTooltip(res, slots, now);
 		item.backgroundColor = hot ? new vscode.ThemeColor("statusBarItem.errorBackground") : undefined;
-		await checkQuotaAlerts(res).catch((err) => log.appendLine(`[alert] check failed: ${err}`));
 	} catch (err) {
 		log.appendLine(`[usage] status refresh failed: ${err}`);
 		item.text = STATUS_TEXT;
 		item.tooltip = "Kimi Code";
+		item.backgroundColor = undefined;
 	}
 }
 
@@ -879,6 +972,11 @@ function diagnosticsReport(context) {
 		for (const line of unitStatusLines(path.join(dir, "extension.js"), EXT_UNITS)) lines.push(`  ${line}`);
 		for (const line of unitStatusLines(path.join(dir, "webview.js"), WV_UNITS)) lines.push(`  ${line}`);
 	}
+	if (lastPatchReport) {
+		lines.push("", "Patch operation", `  state: ${lastPatchReport.state}`);
+		for (const issue of lastPatchReport.issues || []) lines.push(`  ${issue}`);
+		if (lastPatchReport.backup) lines.push(`  backup: ${JSON.stringify(lastPatchReport.backup)}`);
+	}
 	lines.push("", "Hooks in globalThis");
 	for (const line of hookStatus()) lines.push(`  ${line}`);
 	lines.push("", "Tracked windows");
@@ -919,6 +1017,12 @@ const STR = {
 		refreshQuota: "Refresh quota", newWindow: "New window",
 		reopenClosed: "Reopen closed window", openWindows: "Open windows",
 		noQuota: "Quota unavailable — open a Kimi window or sign in",
+		stale: "⚠ stale", refreshNeeded: "↻ refresh needed",
+		noOpenChats: "No open Kimi chats.", noWaitingChats: "No Kimi chats are waiting for input.", noAttentionChats: "No Kimi chats need attention.",
+		openChats: {
+			title: "Open Kimi chats", placeholder: "Search open chats", statusRunning: "working", statusWaiting: "waiting for input", statusDone: "done", statusError: "error",
+			counterTooltip: (n) => `${n} Kimi chat(s) waiting for input`
+		},
 		tabCompletionMessage: (title) => `Kimi Code: the work in "${title}" is complete.`
 	},
 	ru: {
@@ -930,6 +1034,12 @@ const STR = {
 		refreshQuota: "Обновить лимиты", newWindow: "Новое окно",
 		reopenClosed: "Вернуть закрытое окно", openWindows: "Открытые окна",
 		noQuota: "Квота недоступна — откройте окно Kimi или войдите",
+		stale: "⚠ устарело", refreshNeeded: "↻ нужно обновить",
+		noOpenChats: "Нет открытых чатов Kimi.", noWaitingChats: "Нет чатов Kimi, ожидающих ответа.", noAttentionChats: "Нет чатов Kimi, требующих внимания.",
+		openChats: {
+			title: "Открытые чаты Kimi", placeholder: "Поиск открытых чатов", statusRunning: "работа", statusWaiting: "ожидает ответа", statusDone: "завершён", statusError: "ошибка",
+			counterTooltip: (n) => `Ожидают ответа: ${n}`
+		},
 		tabCompletionMessage: (title) => `Kimi Code: работа во вкладке «${title}» завершена.`
 	},
 	zh: {
@@ -941,6 +1051,12 @@ const STR = {
 		refreshQuota: "刷新用量", newWindow: "新建窗口",
 		reopenClosed: "重新打开已关闭的窗口", openWindows: "已打开的窗口",
 		noQuota: "配额不可用——请打开 Kimi 窗口或登录",
+		stale: "⚠ 已过期", refreshNeeded: "↻ 需要刷新",
+		noOpenChats: "没有打开的 Kimi 聊天。", noWaitingChats: "没有等待输入的 Kimi 聊天。", noAttentionChats: "没有需要注意的 Kimi 聊天。",
+		openChats: {
+			title: "打开的 Kimi 聊天", placeholder: "搜索打开的聊天", statusRunning: "进行中", statusWaiting: "等待输入", statusDone: "已完成", statusError: "错误",
+			counterTooltip: (n) => `${n} 个 Kimi 聊天等待输入`
+		},
 		tabCompletionMessage: (title) => `Kimi Code：「${title}」中的任务已完成。`
 	}
 };
@@ -962,6 +1078,7 @@ async function showMenu() {
 	items.push({ label: `$(refresh) ${T.refreshQuota}`, action: "refresh" });
 	items.push({ label: `$(add) ${T.newWindow}`, action: "open" });
 	items.push({ label: `$(history) ${T.reopenClosed}`, action: "reopen" });
+	items.push({ label: `$(list-selection) ${T.openWindows}`, action: "openChats" });
 	const panels = getKimiPanels();
 	if (panels.length > 0) {
 		items.push({ label: T.openWindows, kind: vscode.QuickPickItemKind.Separator });
@@ -974,14 +1091,15 @@ async function showMenu() {
 		return;
 	}
 	if (picked.action === "refresh") {
-		usageCache = { data: null, at: 0 };
+		usageCache = { data: usageCache.data, at: 0 };
 		await refreshUsageStatus();
 		await showMenu();
 		return;
 	}
 	const command = {
 		open: "kimiCompanion.open",
-		reopen: "kimiCompanion.reopenClosed"
+		reopen: "kimiCompanion.reopenClosed",
+		openChats: "kimiCompanion.openChats"
 	}[picked.action];
 	if (command) await vscode.commands.executeCommand(command);
 }
@@ -1022,6 +1140,7 @@ function setPanelStatus(panel, status) {
 	try {
 		if (panel.title !== marker + base) panel.title = marker + base;
 		log.appendLine(`[status] ${status || "idle"} "${base}"`);
+		if (openChats) void openChats.refresh();
 	} catch {
 		// panel gone
 	}
@@ -1143,7 +1262,12 @@ function currentEntries() {
 		let sessionId = null;
 		const wid = getWebviewId ? safe(() => getWebviewId(p)) : undefined;
 		if (wid && getSessionId) sessionId = safe(() => getSessionId(wid)) || null;
-		return { title: stripStatusMarker(p.title), sessionId, column: safe(() => p.viewColumn) || null };
+		return {
+			title: stripStatusMarker(p.title),
+			sessionId,
+			column: safe(() => p.viewColumn) || null,
+			userNamed: userNamedPanels.has(p) || undefined
+		};
 	});
 }
 
@@ -1151,9 +1275,13 @@ function recordClosed(context, prev, now) {
 	// Keyed by session only: auto-naming and renames change the title of a window that is
 	// still open, and must not put its session into the closed history.
 	const nowSessions = new Set(now.map((e) => e.sessionId).filter(Boolean));
-	const gone = prev.filter((e) => e.sessionId && !nowSessions.has(e.sessionId));
+	const goneBySession = new Map();
+	for (const entry of prev) {
+		if (entry.sessionId && !nowSessions.has(entry.sessionId)) goneBySession.set(entry.sessionId, entry);
+	}
+	const gone = [...goneBySession.values()];
 	if (gone.length === 0) return;
-	const goneSessions = new Set(gone.map((e) => e.sessionId));
+	const goneSessions = new Set(goneBySession.keys());
 	const hist = context.workspaceState.get(CLOSED_KEY, []).filter((e) => !goneSessions.has(e.sessionId));
 	hist.push(...gone);
 	while (hist.length > CLOSED_MAX) hist.shift();
@@ -1238,6 +1366,7 @@ function autoNamePanels() {
 }
 
 function persistSidebarSession(context) {
+	if (!canPersistState()) return;
 	const { getSidebarId, getSessionId } = getHooks();
 	if (!getSidebarId || !getSessionId) return;
 	const wid = safe(() => getSidebarId());
@@ -1251,131 +1380,123 @@ function persistSidebarSession(context) {
 }
 
 function reconcile(context, reason) {
+	if (activationDisposed) return;
 	const entries = currentEntries();
 	const json = JSON.stringify(entries);
-	if (json !== lastPersisted) {
-		if (startupDone) recordClosed(context, JSON.parse(lastPersisted), entries);
+	if (canPersistState() && json !== lastPersisted) {
+		recordClosed(context, JSON.parse(lastPersisted), entries);
 		lastPersisted = json;
 		context.workspaceState.update(ENTRIES_KEY, entries);
 		log.appendLine(`[sync:${reason}] tracked: ${json}`);
 	}
 	persistSidebarSession(context);
 	autoNamePanels();
+	if (openChats) void openChats.refresh();
 }
 
 // --- Patching the Kimi extension ------------------------------------
 
-// Async I/O: the Kimi dist is ~9 MB, a sync read would block the shared extension host.
-async function patchDistFile(file, units, failures) {
-	let src;
+function patchOptions(ext) {
+	return {
+		extensionPath: ext.extensionUri.fsPath,
+		version: String(ext.packageJSON.version),
+		extUnits: EXT_UNITS,
+		wvUnits: WV_UNITS
+	};
+}
+
+function offerReload(message) {
+	vscode.window.showInformationMessage(message, "Reload Window").then((choice) => {
+		if (choice) vscode.commands.executeCommand("workbench.action.reloadWindow");
+	});
+}
+
+async function runPatchOperation(operation, notify = true) {
+	const ext = vscode.extensions.getExtension(KIMI_EXT_ID);
+	if (!ext || !patchManager) return null;
 	try {
-		src = await fs.promises.readFile(file, "utf8");
+		const report = await patchManager[operation](patchOptions(ext));
+		lastPatchReport = report;
+		log.appendLine(`[patch] ${operation}: ${report.state}; ${report.issues.join("; ") || "ok"}`);
+		if (notify && report.changed) offerReload(`Kimi Code Companion: Kimi files were ${operation === "restore" ? "restored" : "patched"} — a window reload is required.`);
+		else if (notify && !report.ok) vscode.window.showWarningMessage(`Kimi Code Companion: patch state is ${report.state}. ${report.issues.join(" ")}`);
+		return report;
 	} catch (err) {
-		log.appendLine(`[patch] cannot read ${file}: ${err}`);
-		return false;
+		lastPatchReport = err.report || { state: "error", issues: [String(err)] };
+		log.appendLine(`[patch] ${operation} FAILED: ${err}`);
+		if (notify) vscode.window.showWarningMessage(`Kimi Code Companion: ${operation} failed — ${err.message || err}`);
+		return lastPatchReport;
 	}
-	let changed = false;
-	for (const unit of units) {
-		if (src.includes(unit.marker)) continue;
-		if (src.split(unit.old).length - 1 !== 1) {
-			log.appendLine(`[patch] anchor for ${unit.marker} not found exactly once in ${path.basename(file)}`);
-			failures.push(unit.marker);
-			continue;
-		}
-		src = src.replace(unit.old, unit.repl);
-		changed = true;
-		log.appendLine(`[patch] applied ${unit.marker} to ${path.basename(file)}`);
-	}
-	if (changed) {
-		try {
-			const bak = file + ".bak-kimi-companion";
-			// COPYFILE_EXCL keeps the first (pristine) backup if one already exists.
-			await fs.promises.copyFile(file, bak, fs.constants.COPYFILE_EXCL).catch((err) => {
-				if (err.code !== "EEXIST") throw err;
-			});
-			await fs.promises.writeFile(file, src, "utf8");
-		} catch (err) {
-			log.appendLine(`[patch] write failed for ${file}: ${err}`);
-			return false;
-		}
-	}
-	return changed;
 }
 
 async function ensureMoonshotPatched() {
-	const ext = vscode.extensions.getExtension(KIMI_EXT_ID);
-	if (!ext) {
+	if (!vscode.extensions.getExtension(KIMI_EXT_ID)) {
 		log.appendLine("[patch] moonshot-ai.kimi-code not installed");
 		return;
 	}
-	const distDir = path.join(ext.extensionUri.fsPath, "dist");
-	const failures = [];
-	const appliedExt = await patchDistFile(path.join(distDir, "extension.js"), EXT_UNITS, failures);
-	const appliedWv = await patchDistFile(path.join(distDir, "webview.js"), WV_UNITS, failures);
-	const applied = appliedExt || appliedWv;
-	if (failures.length > 0) {
-		vscode.window.showWarningMessage(
-			`Kimi Code Companion: the installed Kimi version changed its code (anchors: ${failures.join(", ")}). Manual repatch is required — see the extension README.`
-		);
-	}
-	if (applied) {
-		vscode.window
-			.showInformationMessage(
-				"Kimi Code Companion: the Kimi extension was patched — a window reload is required.",
-				"Reload Window"
-			)
-			.then((choice) => {
-				if (choice) vscode.commands.executeCommand("workbench.action.reloadWindow");
-			});
-	} else if (failures.length === 0) {
-		log.appendLine("[patch] all patches present");
-	}
+	await runPatchOperation("install");
+}
+
+async function restoreMoonshotOriginals() {
+	const choice = await vscode.window.showWarningMessage(
+		"Restore the original Kimi extension files? The Companion features that depend on patches will stop working after reload.",
+		{ modal: true },
+		"Restore Original Files"
+	);
+	if (choice) await runPatchOperation("restore");
 }
 
 // --- Opening / restoring ---------------------------------------------
 
-function openKimiTab(context, reason, title, column) {
+let openQueue = Promise.resolve();
+function openKimiTab(context, reason, title, column, userNamed = false) {
+	const run = openQueue.then(() => openKimiTabNow(context, reason, title, column, userNamed));
+	openQueue = run.then(() => undefined, () => undefined);
+	return run;
+}
+
+async function openKimiTabNow(context, reason, title, column, userNamed) {
+	if (activationDisposed) return undefined;
 	log.appendLine(`[open:${reason}] kimi.openInTab${title ? ` title="${title}"` : ""}${column ? ` column=${column}` : ""}`);
-	if (title) globalThis.__kimiCompanionNextTitle = title;
-	if (column) globalThis.__kimiCompanionNextColumn = column;
-	const before = getKimiPanels().length;
-	return vscode.commands.executeCommand("kimi.openInTab").then(
-		() => {
-			delete globalThis.__kimiCompanionNextTitle;
-			delete globalThis.__kimiCompanionNextColumn;
-			const panels = getKimiPanels();
-			const panel = panels.length > before ? panels[panels.length - 1] : undefined;
-			log.appendLine(`[open:${reason}] OK, captured=${panel !== undefined}, tracked=${panels.length}`);
-			reconcile(context, `open:${reason}`);
-			return panel;
-		},
-		(err) => {
-			delete globalThis.__kimiCompanionNextTitle;
-			delete globalThis.__kimiCompanionNextColumn;
-			const msg = err && err.message ? err.message : String(err);
-			log.appendLine(`[open:${reason}] FAILED: ${msg}`);
-			vscode.window.showWarningMessage(`Kimi Code Companion: failed to open a Kimi window — ${msg}`);
-			return undefined;
-		}
-	);
+	const before = new Set(getKimiPanels());
+	try {
+		if (title) globalThis.__kimiCompanionNextTitle = title;
+		if (column) globalThis.__kimiCompanionNextColumn = column;
+		await vscode.commands.executeCommand("kimi.openInTab");
+		if (activationDisposed) return undefined;
+		const panel = getKimiPanels().find((candidate) => !before.has(candidate));
+		if (panel && userNamed) userNamedPanels.add(panel);
+		log.appendLine(`[open:${reason}] OK, captured=${panel !== undefined}, tracked=${getKimiPanels().length}`);
+		reconcile(context, `open:${reason}`);
+		if (!panel) throw new Error("the command completed without creating a new Kimi panel");
+		return panel;
+	} catch (err) {
+		const msg = err && err.message ? err.message : String(err);
+		log.appendLine(`[open:${reason}] FAILED: ${msg}`);
+		vscode.window.showWarningMessage(`Kimi Code Companion: failed to open a Kimi window — ${msg}`);
+		return undefined;
+	} finally {
+		delete globalThis.__kimiCompanionNextTitle;
+		delete globalThis.__kimiCompanionNextColumn;
+	}
 }
 
 async function ensureSessionLoadedById(wid, sessionId, label) {
 	const { getSessionId, loadSession } = getHooks();
 	if (!getSessionId || !loadSession) {
 		log.appendLine("[restore] session hooks unavailable — history not restored");
-		return;
+		return false;
 	}
 	for (let attempt = 1; attempt <= 5; attempt++) {
-		await delay(1200);
+		if (!await delay(1200)) return false;
 		const current = safe(() => getSessionId(wid)) || null;
 		if (current === sessionId) {
 			log.appendLine(`[restore] history attached in ${label}: ${sessionId}`);
-			return;
+			return true;
 		}
 		if (current) {
 			log.appendLine(`[restore] ${label} already has another session (${current}), leaving it`);
-			return;
+			return false;
 		}
 		log.appendLine(`[restore] loading ${sessionId} into ${label} (attempt ${attempt})`);
 		try {
@@ -1385,6 +1506,7 @@ async function ensureSessionLoadedById(wid, sessionId, label) {
 		}
 	}
 	log.appendLine(`[restore] gave up on ${sessionId}`);
+	return false;
 }
 
 async function ensureSessionLoaded(panel, sessionId) {
@@ -1392,44 +1514,59 @@ async function ensureSessionLoaded(panel, sessionId) {
 	const wid = getWebviewId ? safe(() => getWebviewId(panel)) : undefined;
 	if (!wid) {
 		log.appendLine("[restore] no webviewId for panel");
-		return;
+		return false;
 	}
-	await ensureSessionLoadedById(wid, sessionId, wid);
+	return ensureSessionLoadedById(wid, sessionId, wid);
 }
 
 async function restoreWindows(context, entries) {
-	await delay(1500);
+	restoringWindows = true;
 	try {
+		if (!await delay(1500)) return;
 		if (getKimiPanels().length > 0) {
 			log.appendLine("[restore] windows already present, skipping");
 			return;
 		}
 		const jobs = [];
 		for (const entry of entries) {
-			const panel = await openKimiTab(context, "restore", entry.title, entry.column);
-			if (panel && entry.sessionId) {
-				jobs.push(ensureSessionLoaded(panel, entry.sessionId));
+			const panel = await openKimiTab(context, "restore", entry.title, entry.column, entry.userNamed);
+			if (!panel) {
+				restoreHadFailure = true;
+				continue;
 			}
+			if (entry.sessionId) jobs.push(ensureSessionLoaded(panel, entry.sessionId));
 		}
-		await Promise.all(jobs);
-		reconcile(context, "restore");
+		const results = await Promise.all(jobs);
+		if (results.some((ok) => !ok)) restoreHadFailure = true;
+	} catch (err) {
+		restoreHadFailure = true;
+		log.appendLine(`[restore] windows FAILED: ${err}`);
 	} finally {
+		restoringWindows = false;
 		startupDone = true;
+		reconcile(context, "restore");
 	}
 }
 
 async function restoreSidebarSession(context, sessionId) {
-	const deadline = Date.now() + 90000;
-	while (Date.now() < deadline) {
-		const { getSidebarId } = getHooks();
-		const wid = getSidebarId ? safe(() => getSidebarId()) : undefined;
-		if (wid) {
-			await ensureSessionLoadedById(wid, sessionId, "sidebar");
-			return;
+	restoringSidebar = true;
+	try {
+		const deadline = Date.now() + 90000;
+		while (Date.now() < deadline && !activationDisposed) {
+			const { getSidebarId } = getHooks();
+			const wid = getSidebarId ? safe(() => getSidebarId()) : undefined;
+			if (wid) {
+				const ok = await ensureSessionLoadedById(wid, sessionId, "sidebar");
+				if (!ok) restoreHadFailure = true;
+				return;
+			}
+			if (!await delay(POLL_MS)) return;
 		}
-		await delay(POLL_MS);
+		log.appendLine("[restore] sidebar webview did not appear — history not restored");
+		restoreHadFailure = true;
+	} finally {
+		restoringSidebar = false;
 	}
-	log.appendLine("[restore] sidebar webview did not appear — history not restored");
 }
 
 // --- Commands ----------------------------------------------------------
@@ -1478,43 +1615,76 @@ async function reopenClosed(context) {
 		return;
 	}
 	const entry = hist[hist.length - 1];
-	context.workspaceState.update(CLOSED_KEY, hist.slice(0, -1));
 	log.appendLine(`[reopen] ${JSON.stringify(entry)}`);
-	const panel = await openKimiTab(context, "reopen", entry.title, entry.column);
-	if (panel && entry.sessionId) {
-		void ensureSessionLoaded(panel, entry.sessionId);
-	}
+	const panel = await openKimiTab(context, "reopen", entry.title, entry.column, entry.userNamed);
+	if (!panel) return;
+	const current = context.workspaceState.get(CLOSED_KEY, []);
+	context.workspaceState.update(CLOSED_KEY, current.filter((item) => item !== entry && item.sessionId !== entry.sessionId));
+	if (entry.sessionId) void ensureSessionLoaded(panel, entry.sessionId);
 }
 
 // --- Activation ---------------------------------------------------------
 
+async function initializeRestore(context, entries, sidebarSession) {
+	if (!restoreEnabledForSession || activationDisposed) {
+		startupDone = true;
+		return;
+	}
+	try {
+		await fs.promises.mkdir(path.dirname(windowLease.filePath), { recursive: true });
+		if (!await windowLease.acquire()) {
+			startupDone = true;
+			log.appendLine("[restore] another window owns this workspace snapshot; leaving it unchanged");
+			return;
+		}
+	} catch (err) {
+		startupDone = true;
+		restoreHadFailure = true;
+		log.appendLine(`[restore] lease failed: ${err}`);
+		return;
+	}
+	if (entries.length > 0) await restoreWindows(context, entries);
+	else startupDone = true;
+	if (activationDisposed) return;
+	if (sidebarSession) {
+		lastSidebarSession = sidebarSession;
+		await restoreSidebarSession(context, sidebarSession);
+	}
+	reconcile(context, "startup");
+}
+
 function activate(context) {
 	appContext = context;
+	activationDisposed = false;
+	startupDone = false;
+	restoreHadFailure = false;
 	log = vscode.window.createOutputChannel("Kimi Code Companion");
 	context.subscriptions.push(log);
 	log.appendLine(`[activate] ${new Date().toISOString()}`);
+	patchManager = new PatchDistManager({ backupDir: path.join(context.globalStorageUri.fsPath, "patches") });
+	windowLease = new WindowLease({
+		filePath: path.join(context.globalStorageUri.fsPath, "window-restore.lease"),
+		ownerId: randomUUID()
+	});
 
 	globalThis.__kimiCompanionTurnSettled = (info) => {
 		setTimeout(() => {
+			if (activationDisposed) return;
 			updateStatusOnSettled(info);
 			void notifyTabCompletion(info);
 		}, 0);
 	};
-	globalThis.__kimiCompanionTurnStarted = (info) => {
-		setTimeout(() => updateStatusOnStarted(info), 0);
-	};
-	globalThis.__kimiCompanionWaiting = (info) => {
-		setTimeout(() => updateStatusOnWaiting(info), 0);
-	};
-	globalThis.__kimiCompanionPromptSettled = (info) => {
-		setTimeout(() => updateStatusOnPromptSettled(info), 0);
-	};
+	globalThis.__kimiCompanionTurnStarted = (info) => setTimeout(() => {
+		if (!activationDisposed) updateStatusOnStarted(info);
+	}, 0);
+	globalThis.__kimiCompanionWaiting = (info) => setTimeout(() => {
+		if (!activationDisposed) updateStatusOnWaiting(info);
+	}, 0);
+	globalThis.__kimiCompanionPromptSettled = (info) => setTimeout(() => {
+		if (!activationDisposed) updateStatusOnPromptSettled(info);
+	}, 0);
 
-	ensureMoonshotPatched().catch((err) => log.appendLine(`[patch] FAILED: ${err}`));
-
-	const restoreEnabled = vscode.workspace
-		.getConfiguration("kimiCompanion")
-		.get("restoreTabOnStartup", true);
+	restoreEnabledForSession = vscode.workspace.getConfiguration("kimiCompanion").get("restoreTabOnStartup", true);
 	let entries = context.workspaceState.get(ENTRIES_KEY, null);
 	if (!Array.isArray(entries)) {
 		const legacy = context.workspaceState.get(LEGACY_NAMES_KEY, []);
@@ -1522,92 +1692,103 @@ function activate(context) {
 	}
 	lastPersisted = JSON.stringify(entries);
 	const sidebarSession = context.workspaceState.get(SIDEBAR_KEY, null);
-	log.appendLine(
-		`[activate] restoreEnabled=${restoreEnabled} saved=${JSON.stringify(entries)} sidebar=${sidebarSession}`
-	);
-
-	if (restoreEnabled && entries.length > 0) {
-		void restoreWindows(context, entries);
-	} else {
-		startupDone = true;
-	}
-	if (restoreEnabled && sidebarSession) {
-		lastSidebarSession = sidebarSession;
-		void restoreSidebarSession(context, sidebarSession);
-	}
+	log.appendLine(`[activate] restoreEnabled=${restoreEnabledForSession} saved=${JSON.stringify(entries)} sidebar=${sidebarSession}`);
 
 	reportProvider = new ReportProvider();
-	context.subscriptions.push(
-		reportProvider,
-		vscode.workspace.registerTextDocumentContentProvider("kimi-companion", reportProvider)
-	);
+	context.subscriptions.push(reportProvider, vscode.workspace.registerTextDocumentContentProvider("kimi-companion", reportProvider));
+	openChats = new OpenChatsController({
+		getPanels: () => getKimiPanels().map((panel) => ({ panel, title: stripStatusMarker(panel.title), status: panelStatus.get(panel) || null })),
+		reveal: (panel) => panel.reveal(),
+		createQuickPick: () => vscode.window.createQuickPick(),
+		createStatusItem: () => {
+			const item = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 1);
+			item.command = "kimiCompanion.nextWaitingChat";
+			return item;
+		},
+		texts: T.openChats
+	});
+	context.subscriptions.push(openChats);
 
 	context.subscriptions.push(
 		vscode.window.tabGroups.onDidChangeTabs(() => reconcile(context, "tabsChanged")),
-		vscode.commands.registerCommand("kimiCompanion.open", () => {
-			void openKimiTab(context, "command");
+		vscode.commands.registerCommand("kimiCompanion.open", () => { void openKimiTab(context, "command"); }),
+		vscode.commands.registerCommand("kimiCompanion.rename", () => { void renameWindow(context); }),
+		vscode.commands.registerCommand("kimiCompanion.reopenClosed", () => { void reopenClosed(context); }),
+		vscode.commands.registerCommand("kimiCompanion.usage", () => { void showUsage(); }),
+		vscode.commands.registerCommand("kimiCompanion.diagnostics", () => { void showDiagnostics(context); }),
+		vscode.commands.registerCommand("kimiCompanion.checkCompatibility", async () => {
+			await runPatchOperation("check", false);
+			await showDiagnostics(context);
 		}),
-		vscode.commands.registerCommand("kimiCompanion.rename", () => {
-			void renameWindow(context);
+		vscode.commands.registerCommand("kimiCompanion.installPatch", () => runPatchOperation("install")),
+		vscode.commands.registerCommand("kimiCompanion.restorePatch", () => restoreMoonshotOriginals()),
+		vscode.commands.registerCommand("kimiCompanion.openChats", () => {
+			if (!openChats.show()) vscode.window.showInformationMessage(T.noOpenChats);
 		}),
-		vscode.commands.registerCommand("kimiCompanion.reopenClosed", () => {
-			void reopenClosed(context);
+		vscode.commands.registerCommand("kimiCompanion.nextWaitingChat", () => {
+			if (!openChats.nextWaiting()) vscode.window.showInformationMessage(T.noWaitingChats);
 		}),
-		vscode.commands.registerCommand("kimiCompanion.usage", () => {
-			void showUsage();
+		vscode.commands.registerCommand("kimiCompanion.nextAttentionChat", () => {
+			if (!openChats.nextAttention()) vscode.window.showInformationMessage(T.noAttentionChats);
 		}),
-		vscode.commands.registerCommand("kimiCompanion.diagnostics", () => {
-			void showDiagnostics(context);
-		}),
-		vscode.commands.registerCommand("kimiCompanion.menu", () => {
-			void showMenu();
-		})
+		vscode.commands.registerCommand("kimiCompanion.menu", () => { void showMenu(); })
 	);
 
 	const pollTimer = setInterval(() => reconcile(context, "poll"), POLL_MS);
 	context.subscriptions.push({ dispose: () => clearInterval(pollTimer) });
-
 	const item = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 0);
 	item.text = STATUS_TEXT;
 	item.tooltip = "Kimi Code";
 	item.command = "kimiCompanion.menu";
 	statusItem = item;
 	context.subscriptions.push(item);
-
-	const usageTimer = setInterval(() => {
-		void refreshUsageStatus();
-	}, USAGE_REFRESH_MS);
+	const usageTimer = setInterval(() => { void refreshUsageStatus(); }, USAGE_REFRESH_MS);
 	context.subscriptions.push({ dispose: () => clearInterval(usageTimer) });
 	void refreshUsageStatus();
 
 	const updateButton = () => {
-		const enabled = vscode.workspace
-			.getConfiguration("kimiCompanion")
-			.get("statusBarButton", true);
-		if (enabled) {
-			item.show();
-		} else {
-			item.hide();
-		}
+		const enabled = vscode.workspace.getConfiguration("kimiCompanion").get("statusBarButton", true);
+		if (enabled) item.show();
+		else item.hide();
 	};
 	updateButton();
-	context.subscriptions.push(
-		vscode.workspace.onDidChangeConfiguration((e) => {
-			if (e.affectsConfiguration("kimiCompanion.statusBarButton")) {
-				updateButton();
-			}
-			if (e.affectsConfiguration("kimiCompanion.usageInStatusBar")) {
-				void refreshUsageStatus();
-			}
-			if (e.affectsConfiguration("kimiCompanion.tabStatusMarkers")) {
-				for (const p of getKimiPanels()) setPanelStatus(p, panelStatus.get(p) || null);
-				reconcile(context, "statusMarkers");
-			}
-		})
-	);
+	context.subscriptions.push(vscode.workspace.onDidChangeConfiguration((e) => {
+		if (e.affectsConfiguration("kimiCompanion.statusBarButton")) updateButton();
+		if (e.affectsConfiguration("kimiCompanion.deepseekBalance")) usageCache = { data: null, at: 0 };
+		if (e.affectsConfiguration("kimiCompanion.usageInStatusBar") || e.affectsConfiguration("kimiCompanion.deepseekBalance")) void refreshUsageStatus();
+		if (e.affectsConfiguration("kimiCompanion.tabStatusMarkers")) {
+			for (const p of getKimiPanels()) setPanelStatus(p, panelStatus.get(p) || null);
+			reconcile(context, "statusMarkers");
+		}
+	}));
+
+	void (async () => {
+		const report = await ensureMoonshotPatched();
+		if (activationDisposed) return;
+		if (report && report.changed) {
+			startupDone = true;
+			return;
+		}
+		if (!hooksAvailable()) {
+			startupDone = true;
+			log.appendLine("[restore] hooks unavailable; saved state is preserved until a compatible reload");
+			return;
+		}
+		await initializeRestore(context, entries, sidebarSession);
+	})().catch((err) => {
+		startupDone = true;
+		restoreHadFailure = true;
+		log.appendLine(`[activate] initialization FAILED: ${err}`);
+	});
+	void openChats.refresh();
 }
 
-function deactivate() {
+async function deactivate() {
+	activationDisposed = true;
+	cancelPendingDelays();
+	cancelPendingRequests();
+	if (openChats) openChats.dispose();
+	if (windowLease) await windowLease.dispose();
 	if (log) log.appendLine(`[deactivate] ${new Date().toISOString()}`);
 	delete globalThis.__kimiCompanionTurnSettled;
 	delete globalThis.__kimiCompanionTurnStarted;
@@ -1629,6 +1810,26 @@ module.exports = {
 		plainText,
 		quotaWindowLabel,
 		recordClosed,
+		reconcile,
+		reopenClosed,
+		openKimiTab,
+		canPersistState,
+		checkQuotaAlerts,
+		doRefreshUsageStatus,
+		setStateForTests(state) {
+			if ("startupDone" in state) startupDone = state.startupDone;
+			if ("activationDisposed" in state) activationDisposed = state.activationDisposed;
+			if ("restoringWindows" in state) restoringWindows = state.restoringWindows;
+			if ("restoringSidebar" in state) restoringSidebar = state.restoringSidebar;
+			if ("restoreHadFailure" in state) restoreHadFailure = state.restoreHadFailure;
+			if ("restoreEnabledForSession" in state) restoreEnabledForSession = state.restoreEnabledForSession;
+			if ("windowLease" in state) windowLease = state.windowLease;
+			if ("lastPersisted" in state) lastPersisted = state.lastPersisted;
+			if ("statusItem" in state) statusItem = state.statusItem;
+			if ("usageCache" in state) usageCache = state.usageCache;
+			if ("appContext" in state) appContext = state.appContext;
+			if ("log" in state) log = state.log;
+		},
 		stripStatusMarker,
 		EXT_UNITS,
 		WV_UNITS

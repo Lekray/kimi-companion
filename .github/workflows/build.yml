@@ -45,7 +45,11 @@ jobs:
 
       - name: Build vsix
         shell: bash
-        run: python scripts/build-vsix.py . dev out.vsix
+        run: |
+          set -euo pipefail
+          version="$(node -p "require('./package.json').version")"
+          echo "package.json version: $version"
+          python scripts/build-vsix.py . "$version" out.vsix
 
       - name: Upload vsix
         uses: actions/upload-artifact@v4

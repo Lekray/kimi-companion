@@ -4,6 +4,9 @@
 Usage:
     python scripts/build-vsix.py <repo_root> <version> <out_path>
 
+<version> must equal "version" in package.json; a mismatch is a hard error so a
+package can never ship a manifest that disagrees with the extension it carries.
+
 Only the Python standard library is used, so no npm/node/vsce is required on
 the build machine.  The produced archive is a plain zip with the usual OPC
 layout:
@@ -57,6 +60,7 @@ OPTIONAL_FILES = [
     "NOTICE",
 ]
 
+REQUIRED_DIRS = ["lib"]
 OPTIONAL_DIRS = ["resources", "docs"]
 
 
@@ -87,9 +91,11 @@ def collect_files(repo_root):
         else:
             log("WARNING: %s not found, skipped" % name)
 
-    for name in OPTIONAL_DIRS:
+    for name in REQUIRED_DIRS + OPTIONAL_DIRS:
         directory = os.path.join(repo_root, name)
         if not os.path.isdir(directory):
+            if name in REQUIRED_DIRS:
+                raise FileNotFoundError("required directory not found: %s" % name)
             log("WARNING: %s/ not found, skipped" % name)
             continue
         for current, dirnames, filenames in os.walk(directory):
@@ -213,10 +219,10 @@ def main(argv):
     with open(package_json, "r", encoding="utf-8") as handle:
         package = json.load(handle)
 
-    package_version = str(package.get("version", ""))
+    package_version = str(package.get("version", "")).strip()
     if package_version != version:
-        log(
-            "WARNING: package.json version is %s but the manifest will say %s"
+        return fail(
+            "version mismatch: package.json says %s but the build was asked for %s"
             % (package_version or "<missing>", version)
         )
 

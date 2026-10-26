@@ -7,6 +7,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `Kimi Code: Open Chats` — a live, searchable picker of the open Kimi chats: waiting for input first, then errors, then the rest in tab order. The search stays native (the full list is handed to VS Code on every refresh and the query is kept), and accepting revalidates the chat against the live list. Also reachable from the editor title bar and the status bar menu.
+- `Kimi Code: Next Waiting Chat` and `Kimi Code: Next Chat Needing Attention` — cycle through waiting (or waiting and error) chats with wrap-around; a chat that disappears restarts the cycle.
+- A `[? N]` status bar counter of chats waiting for input, shown only while N > 0; clicking it opens the next waiting chat.
+- `Kimi Code: Check Compatibility`, `Kimi Code: Install / Repair Patches` and `Kimi Code: Restore Original Files` commands.
+- A verified patch manifest (`resources/patch-manifest.json`, schema 1): pristine and patched SHA-256 hashes and sizes for both dist files of Kimi Code 0.8.2 and 0.8.3, plus a fingerprint of the twelve patch units.
+- Transactional patching (`lib/patch-dist.js`): a serializing lock, atomic writes (temporary file, `fsync`, rename), pre-write anchor/parse checks, post-write hash/marker/parse checks and rollback to the exact previous bytes.
+- A hash-verified pristine backup in the companion's `globalStorage` (`patches/<version>/` with `backup.json` as the commit marker); legacy `.bak-kimi-companion` files are migrated only when their hashes match the manifest.
+- A single-owner window lease for the saved snapshot: one window restores and persists titles, columns and sessions, other windows leave the snapshot unchanged.
+- Manually renamed windows are persisted as user-named and are never overwritten by auto-naming, even when the title is "Kimi Code".
+- Usage freshness (`fresh` / `stale` / `refresh needed`) in the usage report and the status bar.
+- `kimiCompanion.deepseekBalance` (default `true`) to switch the DeepSeek balance request off.
+
+### Fixed
+
+- Saved window state is no longer overwritten when it cannot be rebuilt safely: restoration disabled, hooks unavailable (unpatched or unknown Kimi version), a just-applied patch awaiting reload, another window holding the lease, or a failed restoration. The next reload retries from the same snapshot.
+- A failed "Reopen closed window" keeps the entry in the closed history instead of consuming it.
+- Direct quota requests time out after 12 s and never overlap; a trigger during an in-flight refresh coalesces into one re-read.
+- Quota alerts are evaluated before the `usageInStatusBar` check, so hiding the percent no longer suppresses notifications; the latch re-arms after a limit reset or when usage falls below 90% of the threshold (DeepSeek: once the balance recovers above 1.5× the alert amount).
+- DeepSeek balance is not requested when `kimiCompanion.deepseekBalance` is off.
+- Consecutive open commands are serialized, so a title/column pair cannot be mixed between windows.
+
+### Changed
+
+- The Kimi dist is patched only for versions in the manifest: an unknown version reports `state: unknown` and writes nothing; a dist matching no known pristine/patched/proven-partial stage is refused as well.
+- Quota is read through the Kimi hook (`__kimiCompanionGetUsage`) first and by a direct HTTPS request with the local credentials only as a fallback; direct candidates must be HTTPS, and an endpoint answering without usable limit slots is skipped.
+- The 5-hour value keeps preferring the official `usages.limit_5h` field and falls back to the live `limits[]` counter when the official value is frozen, stale-zero or missing; the choice is now tracked across successive responses (`lib/usage-state.js`).
+- The status bar appends `⚠ stale` / `↻ refresh needed` when the snapshot is old or past its reset; only fresh data can paint the red highlight.
+- Diagnostics reports the last patch operation state, its issues and the backup details.
+- Offline unit tests for the patcher, the window lease, the open-chats controller, usage freshness and the restore/persistence rules; CI and `npm test` run them.
+- README (en / ru / zh-cn) documents the verified manifest, the patch commands, the backup location, the Open Chats picker and the multi-window behavior.
+
+### Security
+
+- Install and restore only write bytes whose SHA-256 is verified against the manifest; unknown files and unproven partial states are refused without writing.
+- Rollback never overwrites a file changed by another process after our write — the change is preserved and reported.
+- Backup files are created with owner-only permissions where supported, and patch operations are serialized by a PID-guarded lock that is only broken when its owner is gone or the lock is 10 minutes old.
+- Direct quota requests accept only HTTPS endpoints.
+
 ## [1.7.2] - 2026-10-18
 
 ### Added

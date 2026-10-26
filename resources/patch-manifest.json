@@ -1,0 +1,42 @@
+{
+  "schema": 1,
+  "unitsSha256": "fa960c3fca21823f30349ced14430236c88b15d33634a4a5f7cee33b767f141e",
+  "provenance": {
+    "0.8.2": "pristine extension.js/webview.js from the official moonshot-ai.kimi-code 0.8.2 VSIX at marketplace.visualstudio.com/_apis/public/gallery/publishers/moonshot-ai/vsextensions/kimi-code/0.8.2/vspackage (gzip-wrapped zip), hashed 2026-10-26",
+    "0.8.3": "installed moonshot-ai.kimi-code-0.8.3-win32-x64/dist/*.bak-kimi-companion, cross-checked against the cached 0.8.3 VSIX, hashed 2026-10-26"
+  },
+  "versions": {
+    "0.8.2": {
+      "files": {
+        "extension.js": {
+          "pristineSha256": "25419226a1caae7aec4b40ddbdb4f77fec306aef354783039728ebac36e08c78",
+          "pristineSize": 8943936,
+          "patchedSha256": "78f36cb9bd35ea16fa86b8ad6732608f3a09954d07c92b068eaf6067cffa3453",
+          "patchedSize": 8946500
+        },
+        "webview.js": {
+          "pristineSha256": "c89bdc8f3658682208bdf92bfbd00c4ef521ad690fd1f6b8dd36dadb759d49c6",
+          "pristineSize": 6645572,
+          "patchedSha256": "43ed4faf6bf3e280b9ac73bc21c2f9071e91b0a0cf2a4e5d2c206cca5eefbe1a",
+          "patchedSize": 6645938
+        }
+      }
+    },
+    "0.8.3": {
+      "files": {
+        "extension.js": {
+          "pristineSha256": "99b4249c06979cea9a943d2cd6e476c708ef06393307c4f4a57b7d6437c98abb",
+          "pristineSize": 9006600,
+          "patchedSha256": "181c911e6b25b882ddfae9d230a6e7d075269667ec35f47283a1e43dc1f7af83",
+          "patchedSize": 9009164
+        },
+        "webview.js": {
+          "pristineSha256": "9341a8dbb9d326482743b7cac2a0dba5068c21a5526e674d3254c3f7b94789ca",
+          "pristineSize": 6646484,
+          "patchedSha256": "7798238f08319c5f53ab0848941da1f65c61e8eebc4673b5d7a85ed62625aa68",
+          "patchedSize": 6646850
+        }
+      }
+    }
+  }
+}

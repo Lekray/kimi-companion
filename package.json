@@ -5,8 +5,22 @@
 	"description": "%description%",
 	"version": "1.7.2",
 	"license": "MIT",
+	"scripts": {
+		"check": "node --check extension.js && node -e \"const fs=require('fs'),cp=require('child_process');for(const f of fs.readdirSync('lib').filter(f=>f.endsWith('.js'))){const r=cp.spawnSync(process.execPath,['--check','lib/'+f],{stdio:'inherit'});if(r.status)process.exit(r.status)}\"",
+		"test": "npm run check && node --test \"test/**/*.test.js\"",
+		"package": "node -e \"require('child_process').execFileSync('python',['scripts/build-vsix.py','.',require('./package.json').version,'kimi-companion-'+require('./package.json').version+'.vsix'],{stdio:'inherit'})\""
+	},
 	"engines": {
 		"vscode": "^1.100.0"
+	},
+	"extensionDependencies": [
+		"moonshot-ai.kimi-code"
+	],
+	"capabilities": {
+		"untrustedWorkspaces": {
+			"supported": false
+		},
+		"virtualWorkspaces": false
 	},
 	"categories": [
 		"AI",
@@ -71,6 +85,11 @@
 					"default": true,
 					"description": "%config.usageStatusbar.description%"
 				},
+				"kimiCompanion.deepseekBalance": {
+					"type": "boolean",
+					"default": true,
+					"description": "%config.deepseekBalance.description%"
+				},
 				"kimiCompanion.alerts": {
 					"type": "boolean",
 					"default": true,
@@ -128,6 +147,34 @@
 				"icon": "$(pulse)"
 			},
 			{
+				"command": "kimiCompanion.openChats",
+				"title": "%command.openChats.title%",
+				"icon": "$(list-selection)"
+			},
+			{
+				"command": "kimiCompanion.nextWaitingChat",
+				"title": "%command.nextWaiting.title%"
+			},
+			{
+				"command": "kimiCompanion.nextAttentionChat",
+				"title": "%command.nextAttention.title%"
+			},
+			{
+				"command": "kimiCompanion.checkCompatibility",
+				"title": "%command.checkCompatibility.title%",
+				"icon": "$(checklist)"
+			},
+			{
+				"command": "kimiCompanion.installPatch",
+				"title": "%command.installPatch.title%",
+				"icon": "$(tools)"
+			},
+			{
+				"command": "kimiCompanion.restorePatch",
+				"title": "%command.restorePatch.title%",
+				"icon": "$(discard)"
+			},
+			{
 				"command": "kimiCompanion.menu",
 				"title": "%command.menu.title%"
 			}
@@ -140,6 +187,10 @@
 				},
 				{
 					"command": "kimiCompanion.rename",
+					"group": "navigation"
+				},
+				{
+					"command": "kimiCompanion.openChats",
 					"group": "navigation"
 				}
 			],
