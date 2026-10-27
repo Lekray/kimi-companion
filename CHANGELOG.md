@@ -18,6 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A hash-verified pristine backup in the companion's `globalStorage` (`patches/<version>/` with `backup.json` as the commit marker); legacy `.bak-kimi-companion` files are migrated only when their hashes match the manifest.
 - A single-owner window lease for the saved snapshot: one window restores and persists titles, columns and sessions, other windows leave the snapshot unchanged.
 - Manually renamed windows are persisted as user-named and are never overwritten by auto-naming, even when the title is "Kimi Code".
+- New windows opened by the companion (button, `Ctrl+Alt+K`, menu, usage report link) are named after the current project by default: the VS Code workspace name, or the name of the only workspace folder, normalized to single spaces; "Kimi Code" stays the title when neither exists.
 - Usage freshness (`fresh` / `stale` / `refresh needed`) in the usage report and the status bar.
 - `kimiCompanion.deepseekBalance` (default `true`) to switch the DeepSeek balance request off.
 
@@ -29,6 +30,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Quota alerts are evaluated before the `usageInStatusBar` check, so hiding the percent no longer suppresses notifications; the latch re-arms after a limit reset or when usage falls below 90% of the threshold (DeepSeek: once the balance recovers above 1.5× the alert amount).
 - DeepSeek balance is not requested when `kimiCompanion.deepseekBalance` is off.
 - Consecutive open commands are serialized, so a title/column pair cannot be mixed between windows.
+- Auto-naming from the conversation topic now also replaces the project-name default, while restored, hand-typed and other titles stay untouched.
 
 ### Changed
 

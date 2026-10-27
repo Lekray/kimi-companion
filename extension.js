@@ -1340,14 +1340,28 @@ function readSessionName(sessionId) {
 	return name.length > 42 ? name.slice(0, 41) + "…" : name;
 }
 
+// A window the companion opens itself is titled after the current project rather than the
+// generic "Kimi Code": that title is the companion's own default, not a name the user chose.
+function defaultWindowTitle() {
+	const name = safe(() => vscode.workspace.name);
+	const folders = safe(() => vscode.workspace.workspaceFolders) || [];
+	const folderName = folders.length === 1 ? safe(() => folders[0].name) : undefined;
+	for (const candidate of [name, folderName]) {
+		const title = String(candidate || "").replace(/\s+/g, " ").trim();
+		if (title) return title;
+	}
+	return DEFAULT_TITLE;
+}
+
 // Panels the user renamed by hand keep their title even when it is "Kimi Code".
 const userNamedPanels = new WeakSet();
 
 function autoNamePanels() {
 	const { getWebviewId, getSessionId } = getHooks();
 	if (!getWebviewId || !getSessionId) return;
+	const autoTitles = [DEFAULT_TITLE, defaultWindowTitle()];
 	for (const p of getKimiPanels()) {
-		if (userNamedPanels.has(p) || stripStatusMarker(p.title) !== DEFAULT_TITLE) continue;
+		if (userNamedPanels.has(p) || !autoTitles.includes(stripStatusMarker(p.title))) continue;
 		const wid = safe(() => getWebviewId(p));
 		const sid = wid ? safe(() => getSessionId(wid)) : null;
 		if (!sid) continue;
@@ -1711,7 +1725,7 @@ function activate(context) {
 
 	context.subscriptions.push(
 		vscode.window.tabGroups.onDidChangeTabs(() => reconcile(context, "tabsChanged")),
-		vscode.commands.registerCommand("kimiCompanion.open", () => { void openKimiTab(context, "command"); }),
+		vscode.commands.registerCommand("kimiCompanion.open", () => { void openKimiTab(context, "command", defaultWindowTitle()); }),
 		vscode.commands.registerCommand("kimiCompanion.rename", () => { void renameWindow(context); }),
 		vscode.commands.registerCommand("kimiCompanion.reopenClosed", () => { void reopenClosed(context); }),
 		vscode.commands.registerCommand("kimiCompanion.usage", () => { void showUsage(); }),
@@ -1813,6 +1827,7 @@ module.exports = {
 		reconcile,
 		reopenClosed,
 		openKimiTab,
+		defaultWindowTitle,
 		canPersistState,
 		checkQuotaAlerts,
 		doRefreshUsageStatus,

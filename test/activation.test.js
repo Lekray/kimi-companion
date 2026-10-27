@@ -37,6 +37,8 @@ test("activation preserves state across patch reload and restores a real panel f
 	const vscode = {
 		env: { language: "en", uiKind: 1 },
 		workspace: {
+			name: "demo-project",
+			workspaceFolders: [{ name: "demo-project", uri: { fsPath: "/work/demo-project" } }],
 			getConfiguration: () => ({ get: (key, fallback) => key in config ? config[key] : fallback }),
 			registerTextDocumentContentProvider: disposable,
 			onDidChangeConfiguration: disposable
@@ -145,4 +147,16 @@ test("activation preserves state across patch reload and restores a real panel f
 	assert.equal(panels[0].viewColumn, 2);
 	assert.equal(sessions.get("w1"), "session-1");
 	assert.equal(workspaceState.state.kimiTabEntries[0].userNamed, true);
+
+	// The open command (button, Ctrl+Alt+K, menu) names a new window after the project by default,
+	// and that automatic title is not recorded as a name the user chose.
+	const openedEntry = () => (workspaceState.state.kimiTabEntries || []).find((entry) => entry.title === "demo-project");
+	commands.get("kimiCompanion.open")();
+	for (let attempt = 0; attempt < 50 && !openedEntry(); attempt++) {
+		await new Promise((resolve) => setTimeout(resolve, 100));
+	}
+	assert.equal(panels.length, 2, "the open command creates a new Kimi window");
+	assert.equal(panels[1].title, "demo-project");
+	assert.ok(openedEntry(), "the new window is tracked under its project title");
+	assert.equal(openedEntry().userNamed, undefined, "an automatic title is not a name the user chose");
 });

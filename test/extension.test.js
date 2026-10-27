@@ -3,7 +3,13 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const Module = require("module");
+const fs = require("fs");
+const os = require("os");
 const path = require("path");
+
+// Session metadata is read from KIMI_CODE_HOME; point it at a scratch directory before loading.
+const kimiHome = fs.mkdtempSync(path.join(os.tmpdir(), "kimi-companion-home-"));
+process.env.KIMI_CODE_HOME = kimiHome;
 
 const config = {};
 const vscodeStub = {
@@ -21,7 +27,42 @@ Module._load = function (request, ...rest) {
 const { _test: x } = require(path.join(__dirname, "..", "extension.js"));
 Module._load = originalLoad;
 
+test.after(() => fs.rmSync(kimiHome, { recursive: true, force: true }));
+
 const HOUR = 3600000;
+
+// Runs `fn` with exactly the given workspace name/folders and puts the stub back afterwards.
+function withWorkspace(state, fn) {
+	const saved = { ...vscodeStub.workspace };
+	try {
+		delete vscodeStub.workspace.name;
+		delete vscodeStub.workspace.workspaceFolders;
+		Object.assign(vscodeStub.workspace, state);
+		return fn();
+	} finally {
+		delete vscodeStub.workspace.name;
+		delete vscodeStub.workspace.workspaceFolders;
+		Object.assign(vscodeStub.workspace, saved);
+	}
+}
+
+test("defaultWindowTitle takes the workspace name, trimmed and collapsed", () => {
+	const title = withWorkspace({ name: "  My   Workspace  ", workspaceFolders: [{ name: "folder" }, { name: "other" }] }, () => x.defaultWindowTitle());
+	assert.equal(title, "My Workspace");
+});
+
+test("defaultWindowTitle falls back to the name of the only workspace folder", () => {
+	assert.equal(withWorkspace({ workspaceFolders: [{ name: "  Single   Folder " }] }, () => x.defaultWindowTitle()), "Single Folder");
+	assert.equal(withWorkspace({ name: "   ", workspaceFolders: [{ name: "single-folder" }] }, () => x.defaultWindowTitle()), "single-folder");
+});
+
+test("defaultWindowTitle falls back to the stock title without a project name", () => {
+	assert.equal(withWorkspace({}, () => x.defaultWindowTitle()), "Kimi Code");
+	assert.equal(withWorkspace({ name: "   " }, () => x.defaultWindowTitle()), "Kimi Code");
+	assert.equal(withWorkspace({ workspaceFolders: [] }, () => x.defaultWindowTitle()), "Kimi Code");
+	assert.equal(withWorkspace({ workspaceFolders: [{ name: "  " }] }, () => x.defaultWindowTitle()), "Kimi Code");
+	assert.equal(withWorkspace({ workspaceFolders: [{ name: "a" }, { name: "b" }] }, () => x.defaultWindowTitle()), "Kimi Code", "neither folder wins in a multi-root workspace");
+});
 
 test("parseDirectQuota reads official usages, wire windows and the booster wallet", () => {
 	const res = x.parseDirectQuota({
@@ -216,6 +257,22 @@ test("reconcile persists a verified snapshot only for the lease owner", () => {
 	ctx.state.kimiTabEntries = [{ title: "other", sessionId: "other", column: 1 }];
 	x.reconcile(ctx, "test-nonowner");
 	assert.equal(ctx.state.kimiTabEntries[0].sessionId, "other");
+	clearHooks();
+});
+
+test("auto-naming replaces the project default title but never a name of its own", () => {
+	const sessionDir = path.join(kimiHome, "sessions", "auto-name-1");
+	fs.mkdirSync(sessionDir, { recursive: true });
+	fs.writeFileSync(path.join(sessionDir, "state.json"), JSON.stringify({ title: "Fix the parser" }));
+	fs.writeFileSync(path.join(kimiHome, "session_index.jsonl"), JSON.stringify({ sessionId: "auto-name-1", sessionDir: "sessions/auto-name-1" }) + "\n");
+
+	const projectPanel = { title: "demo-project", webviewId: "w1", sessionId: "auto-name-1", viewColumn: 1 };
+	const customPanel = { title: "My own name", webviewId: "w2", sessionId: "auto-name-1", viewColumn: 1 };
+	installHooks([projectPanel, customPanel]);
+	x.setStateForTests({ restoreEnabledForSession: false, startupDone: true, restoringWindows: false, restoringSidebar: false, restoreHadFailure: false, windowLease: { isOwner: true }, lastPersisted: "[]", log: { appendLine() {} } });
+	withWorkspace({ name: "demo-project" }, () => x.reconcile(fakeContext(), "test-autoname"));
+	assert.equal(projectPanel.title, "Fix the parser", "the project title is still the companion's own default");
+	assert.equal(customPanel.title, "My own name", "a title that is not a default is left alone");
 	clearHooks();
 });
 
