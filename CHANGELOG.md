@@ -5,6 +5,12 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.8.1] - 2026-10-28
+
+### Fixed
+
+- Simultaneous activation in multiple VS Code windows no longer reports a false `patch state is busy` warning: patch operations now wait for the shared lock for up to 30 seconds, including Windows lock-release races, and report `busy` only after a real timeout.
+
 ## [1.8.0] - 2026-10-28
 
 ### Added

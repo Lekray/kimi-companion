@@ -98,6 +98,38 @@ function writeText(dir, name, text) {
 	fs.writeFileSync(path.join(dir, name), text);
 }
 
+async function waitForFile(filePath, timeoutMs = 3000) {
+	const deadline = Date.now() + timeoutMs;
+	while (Date.now() < deadline) {
+		if (fs.existsSync(filePath)) return true;
+		await new Promise((resolve) => setTimeout(resolve, 2));
+	}
+	return false;
+}
+
+function slowFs(ms) {
+	const promises = new Proxy(fs.promises, {
+		get(target, property) {
+			const value = target[property];
+			if (property !== "readFile" || typeof value !== "function") {
+				return typeof value === "function" ? value.bind(target) : value;
+			}
+			return async (...args) => {
+				const result = await value.apply(target, args);
+				await new Promise((resolve) => setTimeout(resolve, ms));
+				return result;
+			};
+		}
+	});
+	return new Proxy(fs, {
+		get(target, property) {
+			if (property === "promises") return promises;
+			const value = target[property];
+			return typeof value === "function" ? value.bind(target) : value;
+		}
+	});
+}
+
 function failingFs(failPath, beforeFail) {
 	const resolved = path.resolve(failPath);
 	const promises = new Proxy(fs.promises, {
@@ -410,22 +442,63 @@ test("corrupt backups are reported as backup-invalid and cannot be restored", as
 	assert.equal(hashOf(pristine.dist, "extension.js"), pristine.manifest.versions[pristine.version].files["extension.js"].patchedSha256);
 });
 
-test("concurrent installs are serialized by the process lock", async (t) => {
+test("concurrent installs are serialized by the lock file", async (t) => {
 	const db = setup(t);
-	const first = db.manager();
-	const second = db.manager();
-	const [a, b] = await Promise.all([first.install(db.args), second.install(db.args)]);
+	const lock = path.join(db.backupDir, ".kimi-companion-patch.lock");
+	const first = db.manager({ fs: slowFs(40) });
+	const second = db.manager({ lockTimeoutMs: 5000, lockRetryMs: 5 });
+	const firstRun = first.install(db.args);
+	assert.equal(await waitForFile(lock), true, "the first install holds the lock");
+	const [a, b] = await Promise.all([firstRun, second.install(db.args)]);
 	assert.equal(a.ok, true);
 	assert.equal(a.state, "patched");
-	assert.equal(b.ok, false);
-	assert.equal(b.state, "busy");
-	assert.ok(b.issues.some((item) => item.code === "locked"));
+	assert.equal(a.changed, true);
+	assert.equal(b.ok, true);
+	assert.equal(b.state, "patched");
+	assert.equal(b.changed, false);
+	assert.ok(!b.issues.some((item) => item.code === "locked"), "the waiter is not reported as busy");
+	assert.equal(fs.existsSync(lock), false, "both installs released the lock");
 
 	const after = await db.manager().install(db.args);
 	assert.equal(after.ok, true);
 	assert.equal(after.state, "patched");
 	assert.equal(after.changed, false);
 	assert.equal(hashOf(db.dist, "extension.js"), db.manifest.versions[db.version].files["extension.js"].patchedSha256);
+});
+
+test("an install waits for a held lock instead of reporting busy", async (t) => {
+	const db = setup(t);
+	fs.mkdirSync(db.backupDir, { recursive: true });
+	const lock = path.join(db.backupDir, ".kimi-companion-patch.lock");
+	fs.writeFileSync(lock, JSON.stringify({ pid: process.ppid, token: "holder", at: new Date().toISOString() }));
+	const started = Date.now();
+	const pending = db.manager({ lockTimeoutMs: 5000, lockRetryMs: 5 }).install(db.args);
+	await new Promise((resolve) => setTimeout(resolve, 150));
+	assert.equal(fs.existsSync(lock), true, "the foreign lock is still held");
+	fs.rmSync(lock);
+	const installed = await pending;
+	assert.equal(installed.ok, true);
+	assert.equal(installed.state, "patched");
+	assert.equal(installed.changed, true);
+	assert.ok(Date.now() - started >= 150);
+});
+
+test("a lock that is never released times out as busy", async (t) => {
+	const db = setup(t);
+	fs.mkdirSync(db.backupDir, { recursive: true });
+	const lock = path.join(db.backupDir, ".kimi-companion-patch.lock");
+	const holder = JSON.stringify({ pid: process.ppid, token: "holder", at: new Date().toISOString() });
+	fs.writeFileSync(lock, holder);
+	const started = Date.now();
+	const report = await db.manager({ lockTimeoutMs: 120, lockRetryMs: 10 }).install(db.args);
+	assert.equal(report.ok, false);
+	assert.equal(report.state, "busy");
+	assert.ok(report.issues.some((item) => item.code === "locked"));
+	assert.match(report.issues.join("; "), /locked by another process/);
+	assert.ok(Date.now() - started >= 100);
+	assert.equal(readText(db.dist, "extension.js"), SYN_PRIS["extension.js"]);
+	assert.equal(fs.readFileSync(lock, "utf8"), holder, "the foreign lock is left intact");
+	assert.equal(fs.existsSync(path.join(db.backupDir, db.version)), false);
 });
 
 test("a stale lock left by this process is removed", async (t) => {
