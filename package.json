@@ -3,7 +3,7 @@
 	"publisher": "lekra",
 	"displayName": "%displayName%",
 	"description": "%description%",
-	"version": "1.8.0",
+	"version": "1.8.1",
 	"license": "MIT",
 	"scripts": {
 		"check": "node --check extension.js && node -e \"const fs=require('fs'),cp=require('child_process');for(const f of fs.readdirSync('lib').filter(f=>f.endsWith('.js'))){const r=cp.spawnSync(process.execPath,['--check','lib/'+f],{stdio:'inherit'});if(r.status)process.exit(r.status)}\"",
