@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "unitsSha256": "fa960c3fca21823f30349ced14430236c88b15d33634a4a5f7cee33b767f141e",
+  "unitsSha256": "7fc53bdd321e40169686125a539076a744f646d51fd6c119340d24d3a2c1cbfb",
   "provenance": {
     "0.8.2": "pristine extension.js/webview.js from the official moonshot-ai.kimi-code 0.8.2 VSIX at marketplace.visualstudio.com/_apis/public/gallery/publishers/moonshot-ai/vsextensions/kimi-code/0.8.2/vspackage (gzip-wrapped zip), hashed 2026-10-26",
     "0.8.3": "installed moonshot-ai.kimi-code-0.8.3-win32-x64/dist/*.bak-kimi-companion, cross-checked against the cached 0.8.3 VSIX, hashed 2026-10-26",
@@ -12,8 +12,8 @@
         "extension.js": {
           "pristineSha256": "25419226a1caae7aec4b40ddbdb4f77fec306aef354783039728ebac36e08c78",
           "pristineSize": 8943936,
-          "patchedSha256": "78f36cb9bd35ea16fa86b8ad6732608f3a09954d07c92b068eaf6067cffa3453",
-          "patchedSize": 8946500
+          "patchedSha256": "53173c5d49e13d7ed9330a3ae7e22ebfa8fc9a399087e77b63942d7cf7244e00",
+          "patchedSize": 8946563
         },
         "webview.js": {
           "pristineSha256": "c89bdc8f3658682208bdf92bfbd00c4ef521ad690fd1f6b8dd36dadb759d49c6",
@@ -28,8 +28,8 @@
         "extension.js": {
           "pristineSha256": "99b4249c06979cea9a943d2cd6e476c708ef06393307c4f4a57b7d6437c98abb",
           "pristineSize": 9006600,
-          "patchedSha256": "181c911e6b25b882ddfae9d230a6e7d075269667ec35f47283a1e43dc1f7af83",
-          "patchedSize": 9009164
+          "patchedSha256": "ecc9d959e732ae32a6542f992b9128fd4ae9a26f71b00f1ec9377594f78d6e25",
+          "patchedSize": 9009227
         },
         "webview.js": {
           "pristineSha256": "9341a8dbb9d326482743b7cac2a0dba5068c21a5526e674d3254c3f7b94789ca",
@@ -40,13 +40,13 @@
       }
     },
     "0.8.4": {
-      "unitsSha256": "e1650133b8c027f2353b17c3fd05ea6aad7888d602103a03a2e3e9dfcc6aa8d6",
+      "unitsSha256": "5e55fb69f7c83620a532fd3e6e88e9e41304a324f000b7812eedb85e36f70c4e",
       "files": {
         "extension.js": {
           "pristineSha256": "6787e2dc6d00ddebcf07226a4ee82b5acd8398c24785307695ce841919abf720",
           "pristineSize": 9055125,
-          "patchedSha256": "133889722251bd4b2c3490c9f337a1db49c7d2377668e8dbf1693f7d267f1388",
-          "patchedSize": 9057689
+          "patchedSha256": "e92998c677ced340371bdd267bd641d9c1329a51b26d23f6ee645581f5adda9d",
+          "patchedSize": 9057752
         },
         "webview.js": {
           "pristineSha256": "60c4d6c415d9334d0e905bcd41da962417e1089da7d3332e9f98c98c9b0a0b9b",

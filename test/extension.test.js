@@ -228,7 +228,7 @@ function installHooks(panels) {
 }
 
 function clearHooks() {
-	for (const key of ["__kimiCompanionPanels", "__kimiCompanionGetWebviewId", "__kimiCompanionGetSessionId", "__kimiCompanionLoadSession"]) delete globalThis[key];
+	for (const key of ["__kimiCompanionPanels", "__kimiCompanionGetWebviewId", "__kimiCompanionGetSessionId", "__kimiCompanionLoadSession", "__kimiCompanionSessionTitles"]) delete globalThis[key];
 }
 
 test("reconcile preserves saved entries when restore is disabled or hooks are unavailable", () => {
@@ -260,19 +260,51 @@ test("reconcile persists a verified snapshot only for the lease owner", () => {
 	clearHooks();
 });
 
-test("auto-naming replaces the project default title but never a name of its own", () => {
+test("auto-naming replaces only the stock title", () => {
 	const sessionDir = path.join(kimiHome, "sessions", "auto-name-1");
 	fs.mkdirSync(sessionDir, { recursive: true });
 	fs.writeFileSync(path.join(sessionDir, "state.json"), JSON.stringify({ title: "Fix the parser" }));
 	fs.writeFileSync(path.join(kimiHome, "session_index.jsonl"), JSON.stringify({ sessionId: "auto-name-1", sessionDir: "sessions/auto-name-1" }) + "\n");
 
 	const projectPanel = { title: "demo-project", webviewId: "w1", sessionId: "auto-name-1", viewColumn: 1 };
-	const customPanel = { title: "My own name", webviewId: "w2", sessionId: "auto-name-1", viewColumn: 1 };
-	installHooks([projectPanel, customPanel]);
+	const stockPanel = { title: "Kimi Code", webviewId: "w2", sessionId: "auto-name-1", viewColumn: 1 };
+	const customPanel = { title: "My own name", webviewId: "w3", sessionId: "auto-name-1", viewColumn: 1 };
+	installHooks([projectPanel, stockPanel, customPanel]);
 	x.setStateForTests({ restoreEnabledForSession: false, startupDone: true, restoringWindows: false, restoringSidebar: false, restoreHadFailure: false, windowLease: { isOwner: true }, lastPersisted: "[]", log: { appendLine() {} } });
 	withWorkspace({ name: "demo-project" }, () => x.reconcile(fakeContext(), "test-autoname"));
-	assert.equal(projectPanel.title, "Fix the parser", "the project title is still the companion's own default");
-	assert.equal(customPanel.title, "My own name", "a title that is not a default is left alone");
+	assert.equal(projectPanel.title, "demo-project", "the project title is kept");
+	assert.equal(stockPanel.title, "Fix the parser", "the stock title is replaced");
+	assert.equal(customPanel.title, "My own name", "a custom title is left alone");
+	clearHooks();
+});
+
+test("history title overrides keep manual, restored and project titles", () => {
+	const titles = x.sessionTitleOverrides([
+		{ title: "demo-project", sessionId: "s1" },
+		{ title: "Kimi Code", sessionId: "s2" },
+		{ title: "Kimi Code", sessionId: "s2", userNamed: true },
+		{ title: "Kimi Code", sessionId: "s3", keepTitle: true },
+		{ title: "No session" },
+		{ title: "First", sessionId: "s4" },
+		{ title: "Second", sessionId: "s4" },
+		{ title: "Chosen", sessionId: "s4", userNamed: true }
+	]);
+	assert.deepEqual(titles, { s1: "demo-project", s2: "Kimi Code", s3: "Kimi Code", s4: "Chosen" });
+});
+
+test("reconcile publishes marker-free tab titles for history", () => {
+	const panels = [
+		{ title: "[~] demo-project", webviewId: "w1", sessionId: "s1", viewColumn: 1 },
+		{ title: "No session", webviewId: "w2", sessionId: null, viewColumn: 1 },
+		{ title: "Kimi Code", webviewId: "w3", sessionId: "s3", viewColumn: 1 }
+	];
+	installHooks(panels);
+	x.setStateForTests({ activationDisposed: false, restoreEnabledForSession: false, startupDone: true, restoringWindows: false, restoringSidebar: false, restoreHadFailure: false, windowLease: { isOwner: true }, lastPersisted: "[]", log: { appendLine() {} } });
+	x.reconcile(fakeContext(), "test-history-titles");
+	assert.deepEqual(globalThis.__kimiCompanionSessionTitles, { s1: "demo-project" });
+	clearHooks();
+	x.reconcile(fakeContext(), "test-history-titles-no-hooks");
+	assert.deepEqual(globalThis.__kimiCompanionSessionTitles, {});
 	clearHooks();
 });
 

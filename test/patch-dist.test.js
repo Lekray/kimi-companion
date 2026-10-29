@@ -182,7 +182,7 @@ test("production manifest matches the patch units selected per version and hashe
 			assert.ok(Number.isInteger(entry.patchedSize) && entry.patchedSize > 0);
 		}
 	}
-	assert.equal(manifest.versions["0.8.4"].unitsSha256, "e1650133b8c027f2353b17c3fd05ea6aad7888d602103a03a2e3e9dfcc6aa8d6");
+	assert.equal(manifest.versions["0.8.4"].unitsSha256, "5e55fb69f7c83620a532fd3e6e88e9e41304a324f000b7812eedb85e36f70c4e");
 	assert.equal(REAL_WV_UNITS_084[0].old, "const Ve=new zie,IC=[");
 	assert.notEqual(REAL_WV_UNITS_084[0].old, REAL_WV_UNITS[0].old);
 	assert.equal(wvUnitsFor("0.8.4"), REAL_WV_UNITS_084);

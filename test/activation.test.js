@@ -50,6 +50,16 @@ test("activation preserves state across patch reload and restores a real panel f
 	for (const name of ["extension.js", "webview.js"]) {
 		await fs.promises.copyFile(path.join(sourceDist, name), path.join(dist, name));
 	}
+	// Session topics are read from KIMI_CODE_HOME as it is when the extension module loads.
+	const home = await fs.promises.mkdtemp(path.join(os.tmpdir(), "kimi-companion-home-"));
+	process.env.KIMI_CODE_HOME = home;
+	const writeHome = async () => {
+		const dir = path.join(home, "sessions", "session-2");
+		await fs.promises.mkdir(dir, { recursive: true });
+		await fs.promises.writeFile(path.join(home, "session_index.jsonl"), `${JSON.stringify({ sessionId: "session-2", sessionDir: "sessions/session-2" })}\n`);
+		await fs.promises.writeFile(path.join(dir, "state.json"), JSON.stringify({ title: "Fix the parser" }));
+	};
+	await writeHome();
 	const commands = new Map();
 	const panels = [];
 	const sessions = new Map();
@@ -116,7 +126,10 @@ test("activation preserves state across patch reload and restores a real panel f
 	const extension = require("../extension.js");
 	Module._load = originalLoad;
 	const workspaceState = memento({
-		kimiTabEntries: [{ title: "Restore me", sessionId: "session-1", column: 2, userNamed: true }]
+		kimiTabEntries: [
+			{ title: "Restore me", sessionId: "session-1", column: 2, userNamed: true },
+			{ title: "demo-project", sessionId: "session-2", column: 1 }
+		]
 	});
 	const globalState = memento();
 	const globalStorageUri = { fsPath: path.join(root, "storage") };
@@ -143,7 +156,10 @@ test("activation preserves state across patch reload and restores a real panel f
 		delete globalThis.__kimiCompanionGetSessionId;
 		delete globalThis.__kimiCompanionLoadSession;
 		delete globalThis.__kimiCompanionGetSidebarId;
+		delete globalThis.__kimiCompanionSessionTitles;
+		delete process.env.KIMI_CODE_HOME;
 		await fs.promises.rm(root, { recursive: true, force: true });
+		await fs.promises.rm(home, { recursive: true, force: true });
 	};
 	t.after(cleanup);
 	globalThis.__kimiCompanionGetUsage = () => Promise.resolve({ kind: "ok", windows: [], quota: { usages: {} } });
@@ -156,7 +172,7 @@ test("activation preserves state across patch reload and restores a real panel f
 		if (patchedSource.includes("__kimiCompanionNextTitle") && webviewSource.includes("__kimiCompanionLoadSessionInUi")) break;
 		await new Promise((resolve) => setTimeout(resolve, 100));
 	}
-	assert.equal(workspaceState.state.kimiTabEntries.length, 1, "patch pending reload does not erase saved state");
+	assert.equal(workspaceState.state.kimiTabEntries.length, 2, "patch pending reload does not erase saved state");
 	assert.ok(patchedSource.includes("__kimiCompanionNextTitle"));
 
 	// Diagnostics reports the patches it can see, using the webview unit variant selected
@@ -176,23 +192,43 @@ test("activation preserves state across patch reload and restores a real panel f
 	globalThis.__kimiCompanionGetSessionId = (wid) => sessions.get(wid) || null;
 	globalThis.__kimiCompanionLoadSession = (wid, sessionId) => { sessions.set(wid, sessionId); };
 	globalThis.__kimiCompanionGetSidebarId = () => null;
+	await writeHome();
 	await activate();
-	await new Promise((resolve) => setTimeout(resolve, 3200));
-	assert.equal(panels.length, 1);
+	const savedEntries = () => workspaceState.state.kimiTabEntries || [];
+	for (let attempt = 0; attempt < 80 && !(extension._test.canPersistState() && sessions.get("w2") === "session-2"); attempt++) {
+		await new Promise((resolve) => setTimeout(resolve, 100));
+	}
+	assert.equal(panels.length, 2);
 	assert.equal(panels[0].title, "Restore me");
 	assert.equal(panels[0].viewColumn, 2);
 	assert.equal(sessions.get("w1"), "session-1");
 	assert.equal(workspaceState.state.kimiTabEntries[0].userNamed, true);
+	assert.equal(panels[1].title, "demo-project", "a restored title is saved state, not an automatic name");
+	assert.equal(panels[1].viewColumn, 1);
+	assert.equal(sessions.get("w2"), "session-2");
+
+	// The session topic must not replace a restored title once restore has finished either.
+	extension._test.reconcile(contexts[contexts.length - 1], "test-restored-title");
+	assert.equal(panels[1].title, "demo-project");
+	assert.equal(workspaceState.state.kimiTabEntries[1].userNamed, undefined);
+	assert.deepEqual(globalThis.__kimiCompanionSessionTitles, { "session-1": "Restore me", "session-2": "demo-project" });
 
 	// The open command (button, Ctrl+Alt+K, menu) names a new window after the project by default,
 	// and that automatic title is not recorded as a name the user chose.
-	const openedEntry = () => (workspaceState.state.kimiTabEntries || []).find((entry) => entry.title === "demo-project");
+	const openedEntry = () => savedEntries()[2];
 	commands.get("kimiCompanion.open")();
 	for (let attempt = 0; attempt < 50 && !openedEntry(); attempt++) {
 		await new Promise((resolve) => setTimeout(resolve, 100));
 	}
-	assert.equal(panels.length, 2, "the open command creates a new Kimi window");
-	assert.equal(panels[1].title, "demo-project");
+	assert.equal(panels.length, 3, "the open command creates a new Kimi window");
+	assert.equal(panels[2].title, "demo-project");
 	assert.ok(openedEntry(), "the new window is tracked under its project title");
+	assert.equal(openedEntry().title, "demo-project");
 	assert.equal(openedEntry().userNamed, undefined, "an automatic title is not a name the user chose");
+
+	// The session topic must not replace the project title of a newly opened window either.
+	sessions.set("w3", "session-2");
+	extension._test.reconcile(contexts[contexts.length - 1], "test-opened-title");
+	assert.equal(panels[2].title, "demo-project");
+	assert.deepEqual(globalThis.__kimiCompanionSessionTitles, { "session-1": "Restore me", "session-2": "demo-project" });
 });

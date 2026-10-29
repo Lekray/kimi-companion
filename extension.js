@@ -108,6 +108,11 @@ const EXT_UNITS = [
 			"\t\t/*__kimiCompanionPromptSettled__*/ try { if (globalThis.__kimiCompanionPromptSettled) " +
 			"globalThis.__kimiCompanionPromptSettled({ status: result && result.status, sessionId: this.id, " +
 			"webviewIds: [...this.webviewIds] }); } catch {}"
+	},
+	{
+		marker: "__kimiCompanionSessionTitles",
+		old: 'brief: summary.title ?? summary.lastPrompt ?? ""',
+		repl: 'brief: (globalThis.__kimiCompanionSessionTitles || {})[summary.id] || summary.title || summary.lastPrompt || ""'
 	}
 ];
 // The webview unit names the session-history store of the bundle it is spliced into, so
@@ -1375,13 +1380,14 @@ function defaultWindowTitle() {
 
 // Panels the user renamed by hand keep their title even when it is "Kimi Code".
 const userNamedPanels = new WeakSet();
+// Panels restored or reopened from saved state keep the saved title as well.
+const keptTitlePanels = new WeakSet();
 
 function autoNamePanels() {
 	const { getWebviewId, getSessionId } = getHooks();
 	if (!getWebviewId || !getSessionId) return;
-	const autoTitles = [DEFAULT_TITLE, defaultWindowTitle()];
 	for (const p of getKimiPanels()) {
-		if (userNamedPanels.has(p) || !autoTitles.includes(stripStatusMarker(p.title))) continue;
+		if (userNamedPanels.has(p) || keptTitlePanels.has(p) || stripStatusMarker(p.title) !== DEFAULT_TITLE) continue;
 		const wid = safe(() => getWebviewId(p));
 		const sid = wid ? safe(() => getSessionId(wid)) : null;
 		if (!sid) continue;
@@ -1397,6 +1403,30 @@ function autoNamePanels() {
 			}
 		}
 	}
+}
+
+function sessionTitleOverrides(entries) {
+	const titles = {};
+	for (const entry of entries) {
+		if (!entry.sessionId || !entry.title) continue;
+		if (entry.title === DEFAULT_TITLE && !entry.userNamed && !entry.keepTitle) continue;
+		if (entry.userNamed || !titles[entry.sessionId]) titles[entry.sessionId] = entry.title;
+	}
+	return titles;
+}
+
+function syncSessionTitles() {
+	const { getWebviewId, getSessionId } = getHooks();
+	const entries = getKimiPanels().map((p) => {
+		const wid = getWebviewId ? safe(() => getWebviewId(p)) : undefined;
+		return {
+			title: stripStatusMarker(safe(() => p.title) || ""),
+			sessionId: wid && getSessionId ? safe(() => getSessionId(wid)) || null : null,
+			userNamed: userNamedPanels.has(p),
+			keepTitle: keptTitlePanels.has(p)
+		};
+	});
+	globalThis.__kimiCompanionSessionTitles = sessionTitleOverrides(entries);
 }
 
 function persistSidebarSession(context) {
@@ -1425,6 +1455,7 @@ function reconcile(context, reason) {
 	}
 	persistSidebarSession(context);
 	autoNamePanels();
+	syncSessionTitles();
 	if (openChats) void openChats.refresh();
 }
 
@@ -1484,13 +1515,13 @@ async function restoreMoonshotOriginals() {
 // --- Opening / restoring ---------------------------------------------
 
 let openQueue = Promise.resolve();
-function openKimiTab(context, reason, title, column, userNamed = false) {
-	const run = openQueue.then(() => openKimiTabNow(context, reason, title, column, userNamed));
+function openKimiTab(context, reason, title, column, userNamed = false, keepTitle = false) {
+	const run = openQueue.then(() => openKimiTabNow(context, reason, title, column, userNamed, keepTitle));
 	openQueue = run.then(() => undefined, () => undefined);
 	return run;
 }
 
-async function openKimiTabNow(context, reason, title, column, userNamed) {
+async function openKimiTabNow(context, reason, title, column, userNamed, keepTitle) {
 	if (activationDisposed) return undefined;
 	log.appendLine(`[open:${reason}] kimi.openInTab${title ? ` title="${title}"` : ""}${column ? ` column=${column}` : ""}`);
 	const before = new Set(getKimiPanels());
@@ -1501,6 +1532,7 @@ async function openKimiTabNow(context, reason, title, column, userNamed) {
 		if (activationDisposed) return undefined;
 		const panel = getKimiPanels().find((candidate) => !before.has(candidate));
 		if (panel && userNamed) userNamedPanels.add(panel);
+		if (panel && keepTitle) keptTitlePanels.add(panel);
 		log.appendLine(`[open:${reason}] OK, captured=${panel !== undefined}, tracked=${getKimiPanels().length}`);
 		reconcile(context, `open:${reason}`);
 		if (!panel) throw new Error("the command completed without creating a new Kimi panel");
@@ -1564,7 +1596,7 @@ async function restoreWindows(context, entries) {
 		}
 		const jobs = [];
 		for (const entry of entries) {
-			const panel = await openKimiTab(context, "restore", entry.title, entry.column, entry.userNamed);
+			const panel = await openKimiTab(context, "restore", entry.title, entry.column, entry.userNamed, true);
 			if (!panel) {
 				restoreHadFailure = true;
 				continue;
@@ -1651,7 +1683,7 @@ async function reopenClosed(context) {
 	}
 	const entry = hist[hist.length - 1];
 	log.appendLine(`[reopen] ${JSON.stringify(entry)}`);
-	const panel = await openKimiTab(context, "reopen", entry.title, entry.column, entry.userNamed);
+	const panel = await openKimiTab(context, "reopen", entry.title, entry.column, entry.userNamed, true);
 	if (!panel) return;
 	const current = context.workspaceState.get(CLOSED_KEY, []);
 	context.workspaceState.update(CLOSED_KEY, current.filter((item) => item !== entry && item.sessionId !== entry.sessionId));
@@ -1829,6 +1861,7 @@ async function deactivate() {
 	delete globalThis.__kimiCompanionTurnStarted;
 	delete globalThis.__kimiCompanionWaiting;
 	delete globalThis.__kimiCompanionPromptSettled;
+	delete globalThis.__kimiCompanionSessionTitles;
 }
 
 module.exports = {
@@ -1845,6 +1878,7 @@ module.exports = {
 		plainText,
 		quotaWindowLabel,
 		recordClosed,
+		sessionTitleOverrides,
 		reconcile,
 		reopenClosed,
 		openKimiTab,

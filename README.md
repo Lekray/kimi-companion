@@ -6,7 +6,7 @@ Companion extension for the official **Kimi Code** VS Code extension (`moonshot-
 - **Buttons**: a Kimi icon in the editor title bar (new window), a pencil next to it (rename window), a list icon (Open Chats), and a "K Kimi Code" button on the right side of the status bar;
 - **Rename Kimi windows** (`Kimi Code: Rename Window`) — a title typed by hand is saved and survives a reload, and auto-naming never replaces it again;
 - **Windows named after the project** — a window opened by the companion (button, `Ctrl+Alt+K`, menu) starts with the current workspace name instead of "Kimi Code";
-- **Automatic window titles from the conversation topic** (while a window still carries a default title — "Kimi Code" or the project name it was opened with — the title is taken from the session's `title`/`lastPrompt`);
+- **Automatic window titles from the conversation topic** (while a window still carries the stock "Kimi Code" title, the title is taken from the session's `title`/`lastPrompt`; project names and custom titles are kept);
 - **`Kimi Code: Reopen Closed Window`** — reopens the last closed Kimi window (remembers up to 5); if reopening fails, the entry stays in the history so it can be retried;
 - **`Kimi Code: Open Chats`** — a live, searchable picker of the open Kimi chats: chats waiting for input first, then errors, then the rest in tab order; the search stays native (typing filters the list and the query survives live refreshes), and the picked chat is revalidated against the live list before it is revealed; also available from the editor title bar and the status bar menu;
 - **`Kimi Code: Next Waiting Chat`** / **`Kimi Code: Next Chat Needing Attention`** — reveal the next waiting chat (or the next waiting/error chat), cycling through the list and wrapping around; a chat that disappears restarts the cycle;
@@ -43,7 +43,7 @@ Activity log: View → Output → channel **"Kimi Code Companion"**.
 
 ## How it works (and why it patches the Kimi extension)
 
-VS Code does not let one extension touch another extension's webview panels (neither retitle them nor read their session). So the companion applies twelve tiny patches to the Kimi extension's `dist` — they register panels and hooks in `globalThis` (the shared extension-host scope):
+VS Code does not let one extension touch another extension's webview panels (neither retitle them nor read their session). So the companion applies thirteen tiny patches to the Kimi extension's `dist` — they register panels and hooks in `globalThis` (the shared extension-host scope):
 
 | # | File | Marker | Purpose |
 |---|------|--------|---------|
@@ -59,6 +59,7 @@ VS Code does not let one extension touch another extension's webview panels (nei
 | 10 | extension.js | `/*__kimiCompanionWaitA__*/` | the approval handler is wrapped: pending/resolved approvals are reported to `globalThis.__kimiCompanionWaiting` — the `[?]` status |
 | 11 | extension.js | `/*__kimiCompanionWaitQ__*/` | same wrapper on the question handler — the `[?]` status |
 | 12 | extension.js | `/*__kimiCompanionPromptSettled__*/` | every prompt end (`settlePrompt`) is reported to `globalThis.__kimiCompanionPromptSettled` — clears `[~]`/`[?]` when a prompt ends without a turn terminal (preflight failure, early error, session close) |
+| 13 | extension.js | `__kimiCompanionSessionTitles` | Kimi History displays the current tab title from `globalThis.__kimiCompanionSessionTitles` instead of the automatic session topic when an override is available |
 
 The only anchor that moved between these releases is the webview unit: in 0.8.2/0.8.3 the session-history store of the bundle is `Qe`, while 0.8.4 renamed it to `Ve`. The companion therefore keeps one webview anchor variant per bundle shape and picks the variant by Kimi version.
 
@@ -72,7 +73,7 @@ Every install and restore is transactional:
 
 - a lock file in the backup directory serializes patch operations (a lock whose process is gone, or that is 10 minutes old, is broken);
 - files are written through a temporary file, `fsync` and a rename, so an interrupted operation leaves the previous file intact instead of a half-written one;
-- the result is checked before writing (every anchor occurs exactly once and the patched text parses) and after writing (file hashes, all twelve markers, parse);
+- the result is checked before writing (every anchor occurs exactly once and the patched text parses) and after writing (file hashes, all thirteen markers, parse);
 - if anything fails, the exact previous bytes are put back; a file changed by another process after the write is preserved and reported instead of being overwritten.
 
 An **unknown Kimi version is never patched**: the operation reports `state: unknown`, writes nothing, and the hooks stay unavailable until the manifest gets an entry for that version. A dist that matches no known pristine/patched/partial stage is refused the same way.
