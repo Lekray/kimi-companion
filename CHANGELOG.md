@@ -5,6 +5,17 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.8.2] - 2026-10-29
+
+### Added
+
+- Kimi Code **0.8.4** support: a manifest entry with its own pristine/patched hashes and sizes, plus the webview patch variant that matches the renamed session-history binding in the 0.8.4 bundle (`Qe` → `Ve`). 0.8.2 and 0.8.3 keep their units and stay supported.
+- A version entry in `resources/patch-manifest.json` may carry its own `unitsSha256`; the fingerprint checked at install time is `entry.unitsSha256 ?? manifest.unitsSha256`, so one release can select a different patch-unit set without touching the others. A mismatch still refuses the installation before anything is written.
+
+### Changed
+
+- `Kimi Code: Diagnostics` names the webview unit set selected for the installed Kimi version.
+
 ## [1.8.1] - 2026-10-28
 
 ### Fixed

@@ -20,7 +20,7 @@ Companion extension for the official **Kimi Code** VS Code extension (`moonshot-
 - **Status bar menu** — clicking the button opens a QuickPick with the actions (Refresh quota, New window, Reopen closed window, Open windows) and the list of open windows to focus; "Open windows" opens the searchable picker described above; limits are not repeated there — they live in the status bar, its tooltip and the `Kimi Code: Usage` report; Refresh quota refetches the data and reopens the menu; the menu and the tooltip are localized to the VS Code UI language (en / ru / zh-cn; pace phrases stay English);
 - **`Ctrl+Alt+K`** (`Cmd+Alt+K` on macOS) — new Kimi window;
 - **`Kimi Code: Diagnostics`** — a state report: versions, all 12 patches, the last patch operation with its backup, hooks, windows, saved state;
-- **`Kimi Code: Check Compatibility`**, **`Kimi Code: Install / Repair Patches`**, **`Kimi Code: Restore Original Files`** — hash-verified, transactional patching against a manifest of Kimi Code **0.8.2** and **0.8.3**; an unknown Kimi version is reported and never patched;
+- **`Kimi Code: Check Compatibility`**, **`Kimi Code: Install / Repair Patches`**, **`Kimi Code: Restore Original Files`** — hash-verified, transactional patching against a manifest of Kimi Code **0.8.2**, **0.8.3** and **0.8.4**; an unknown Kimi version is reported and never patched;
 - Restores the conversation in the Kimi **sidebar** as well.
 
 Activity log: View → Output → channel **"Kimi Code Companion"**.
@@ -60,11 +60,13 @@ VS Code does not let one extension touch another extension's webview panels (nei
 | 11 | extension.js | `/*__kimiCompanionWaitQ__*/` | same wrapper on the question handler — the `[?]` status |
 | 12 | extension.js | `/*__kimiCompanionPromptSettled__*/` | every prompt end (`settlePrompt`) is reported to `globalThis.__kimiCompanionPromptSettled` — clears `[~]`/`[?]` when a prompt ends without a turn terminal (preflight failure, early error, session close) |
 
+The only anchor that moved between these releases is the webview unit: in 0.8.2/0.8.3 the session-history store of the bundle is `Qe`, while 0.8.4 renamed it to `Ve`. The companion therefore keeps one webview anchor variant per bundle shape and picks the variant by Kimi version.
+
 **Self-healing:** on every activation the companion runs the install operation. For a supported version it verifies the dist against the manifest and applies only what is missing (e.g. after a Kimi update); if the bytes match no known pristine, patched or proven partial stage, nothing is written and a warning names the problem. If an anchor can't be found for a new Kimi version, the patch table above is the repair guide.
 
 ## Patch commands and the verified manifest
 
-The companion only patches a Kimi Code version listed in `resources/patch-manifest.json` (schema 1). It currently covers **0.8.2** and **0.8.3**; for both dist files the manifest records the SHA-256 and size of the pristine and of the patched file, plus a fingerprint of the twelve patch units.
+The companion only patches a Kimi Code version listed in `resources/patch-manifest.json` (schema 1). It currently covers **0.8.2**, **0.8.3** and **0.8.4**; for both dist files the manifest records the SHA-256 and size of the pristine and of the patched file, plus a fingerprint of the patch units selected for that version (0.8.4 carries its own, because of the webview anchor above).
 
 Every install and restore is transactional:
 
@@ -138,7 +140,7 @@ Restored: the title, the editor column and the conversation. Not restored: the l
 
 ## Known limitations
 
-- Only Kimi Code **0.8.2** and **0.8.3** are covered by the patch manifest; any other version is reported as unknown and left untouched, so the patch-dependent features stay unavailable until the manifest covers it.
+- Only Kimi Code **0.8.2**, **0.8.3** and **0.8.4** are covered by the patch manifest; any other version is reported as unknown and left untouched, so the patch-dependent features stay unavailable until the manifest covers it.
 - History is restored in tab windows and in the sidebar; a window that had a brand-new empty conversation restores empty (titled).
 - If a conversation was deleted from the session list, its window restores empty.
 - Multiple windows: only the lease owner restores and persists the shared snapshot; other windows leave it unchanged, so their titles, columns and history are not recorded while another window owns the lease.

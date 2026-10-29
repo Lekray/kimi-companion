@@ -5,10 +5,33 @@ const os = require("os");
 const path = require("path");
 const Module = require("module");
 
-const sourceDist = path.join(os.homedir(), ".vscode", "extensions", "moonshot-ai.kimi-code-0.8.3-win32-x64", "dist");
-const hasDist = ["extension.js", "webview.js"].every((name) =>
-	fs.existsSync(path.join(sourceDist, `${name}.bak-kimi-companion`))
-);
+// The installed Kimi Code 0.8.4 dist is copied into a temp directory; the installed
+// files are only ever read, never written.
+function installedDist(version) {
+	const base = path.join(os.homedir(), ".vscode", "extensions");
+	let names = [];
+	try {
+		names = fs.readdirSync(base);
+	} catch {
+		return null;
+	}
+	for (const name of names) {
+		if (!name.startsWith("moonshot-ai.kimi-code-")) continue;
+		const dir = path.join(base, name);
+		try {
+			const pkg = JSON.parse(fs.readFileSync(path.join(dir, "package.json"), "utf8"));
+			if (pkg.version !== version) continue;
+			const dist = path.join(dir, "dist");
+			if (["extension.js", "webview.js"].every((file) => fs.existsSync(path.join(dist, file)))) return dist;
+		} catch {
+			// Not an extension directory we can read.
+		}
+	}
+	return null;
+}
+
+const sourceDist = installedDist("0.8.4");
+const hasDist = sourceDist !== null;
 
 function memento(initial = {}) {
 	const state = { ...initial };
@@ -25,7 +48,7 @@ test("activation preserves state across patch reload and restores a real panel f
 	const dist = path.join(extensionPath, "dist");
 	await fs.promises.mkdir(dist, { recursive: true });
 	for (const name of ["extension.js", "webview.js"]) {
-		await fs.promises.copyFile(path.join(sourceDist, `${name}.bak-kimi-companion`), path.join(dist, name));
+		await fs.promises.copyFile(path.join(sourceDist, name), path.join(dist, name));
 	}
 	const commands = new Map();
 	const panels = [];
@@ -33,6 +56,7 @@ test("activation preserves state across patch reload and restores a real panel f
 	const config = { deepseekBalance: false, alerts: false };
 	const noop = () => {};
 	const disposable = () => ({ dispose: noop });
+	const reports = new Map();
 	const statusItem = () => ({ show: noop, hide: noop, dispose: noop });
 	const vscode = {
 		env: { language: "en", uiKind: 1 },
@@ -40,7 +64,7 @@ test("activation preserves state across patch reload and restores a real panel f
 			name: "demo-project",
 			workspaceFolders: [{ name: "demo-project", uri: { fsPath: "/work/demo-project" } }],
 			getConfiguration: () => ({ get: (key, fallback) => key in config ? config[key] : fallback }),
-			registerTextDocumentContentProvider: disposable,
+			registerTextDocumentContentProvider: (scheme, provider) => { reports.set(scheme, provider); return disposable(); },
 			onDidChangeConfiguration: disposable
 		},
 		window: {
@@ -70,7 +94,7 @@ test("activation preserves state across patch reload and restores a real panel f
 			}
 		},
 		extensions: {
-			getExtension: () => ({ extensionUri: { fsPath: extensionPath }, packageJSON: { version: "0.8.3" } })
+			getExtension: () => ({ extensionUri: { fsPath: extensionPath }, packageJSON: { version: "0.8.4" } })
 		},
 		MarkdownString: class { appendMarkdown() {} },
 		ThemeColor: class {},
@@ -128,11 +152,23 @@ test("activation preserves state across patch reload and restores a real panel f
 	let patchedSource = "";
 	for (let attempt = 0; attempt < 50; attempt++) {
 		patchedSource = await fs.promises.readFile(path.join(dist, "extension.js"), "utf8");
-		if (patchedSource.includes("__kimiCompanionNextTitle")) break;
+		const webviewSource = await fs.promises.readFile(path.join(dist, "webview.js"), "utf8");
+		if (patchedSource.includes("__kimiCompanionNextTitle") && webviewSource.includes("__kimiCompanionLoadSessionInUi")) break;
 		await new Promise((resolve) => setTimeout(resolve, 100));
 	}
 	assert.equal(workspaceState.state.kimiTabEntries.length, 1, "patch pending reload does not erase saved state");
 	assert.ok(patchedSource.includes("__kimiCompanionNextTitle"));
+
+	// Diagnostics reports the patches it can see, using the webview unit variant selected
+	// for the installed Kimi version.
+	commands.get("kimiCompanion.diagnostics")();
+	const diagnostics = reports
+		.get("kimi-companion")
+		.provideTextDocumentContent(vscode.Uri.parse("kimi-companion://report/Diagnostics.txt"));
+	assert.match(diagnostics, /moonshot-ai\.kimi-code: 0\.8\.4/);
+	assert.match(diagnostics, /webview unit set: 0\.8\.4 \(Ve\)/);
+	assert.match(diagnostics, /OK\s+__kimiCompanionNextTitle/);
+	assert.match(diagnostics, /OK\s+__kimiCompanionLoadSessionInUi/);
 	await cleanup();
 
 	globalThis.__kimiCompanionGetUsage = () => Promise.resolve({ kind: "ok", windows: [], quota: { usages: {} } });

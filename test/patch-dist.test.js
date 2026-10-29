@@ -30,13 +30,18 @@ function loadExtensionUnits() {
 	};
 	try {
 		const extension = require(path.join(__dirname, "..", "extension.js"));
-		return { extUnits: extension._test.EXT_UNITS, wvUnits: extension._test.WV_UNITS };
+		return {
+			extUnits: extension._test.EXT_UNITS,
+			wvUnits: extension._test.WV_UNITS,
+			wvUnits084: extension._test.WV_UNITS_084,
+			wvUnitsFor: extension._test.wvUnitsFor
+		};
 	} finally {
 		Module._load = originalLoad;
 	}
 }
 
-const { extUnits: REAL_EXT_UNITS, wvUnits: REAL_WV_UNITS } = loadExtensionUnits();
+const { extUnits: REAL_EXT_UNITS, wvUnits: REAL_WV_UNITS, wvUnits084: REAL_WV_UNITS_084, wvUnitsFor } = loadExtensionUnits();
 
 const SYN_PRIS = {
 	"extension.js": "const A = 1;\nconsole.log(A);\n",
@@ -158,11 +163,17 @@ function failingFs(failPath, beforeFail) {
 	});
 }
 
-test("production manifest matches the current patch units and hashes both versions", () => {
+test("production manifest matches the patch units selected per version and hashes every version", () => {
 	assert.equal(manifest.schema, 1);
 	assert.equal(manifest.unitsSha256, unitsFingerprint(REAL_EXT_UNITS, REAL_WV_UNITS));
-	for (const version of ["0.8.2", "0.8.3"]) {
+	for (const version of ["0.8.2", "0.8.3", "0.8.4"]) {
 		assert.ok(manifest.versions[version], `${version} is covered`);
+		const declared = manifest.versions[version].unitsSha256 ?? manifest.unitsSha256;
+		assert.equal(
+			declared,
+			unitsFingerprint(REAL_EXT_UNITS, wvUnitsFor(version)),
+			`${version} declares the fingerprint of the units selected for it`
+		);
 		for (const name of ["extension.js", "webview.js"]) {
 			const entry = manifest.versions[version].files[name];
 			assert.match(entry.pristineSha256, /^[a-f0-9]{64}$/);
@@ -171,6 +182,12 @@ test("production manifest matches the current patch units and hashes both versio
 			assert.ok(Number.isInteger(entry.patchedSize) && entry.patchedSize > 0);
 		}
 	}
+	assert.equal(manifest.versions["0.8.4"].unitsSha256, "e1650133b8c027f2353b17c3fd05ea6aad7888d602103a03a2e3e9dfcc6aa8d6");
+	assert.equal(REAL_WV_UNITS_084[0].old, "const Ve=new zie,IC=[");
+	assert.notEqual(REAL_WV_UNITS_084[0].old, REAL_WV_UNITS[0].old);
+	assert.equal(wvUnitsFor("0.8.4"), REAL_WV_UNITS_084);
+	assert.equal(wvUnitsFor("0.8.3"), REAL_WV_UNITS);
+	assert.equal(wvUnitsFor("0.8.2"), REAL_WV_UNITS);
 });
 
 test("a stale units fingerprint refuses installation before any write", async (t) => {
@@ -187,6 +204,50 @@ test("a stale units fingerprint refuses installation before any write", async (t
 	assert.equal(installed.changed, false);
 	assert.equal(hashOf(db.dist, "extension.js"), before.ext);
 	assert.equal(hashOf(db.dist, "webview.js"), before.wv);
+});
+
+test("a version entry may override the manifest-wide units fingerprint", async (t) => {
+	const units = unitsFingerprint(SYN_EXT, SYN_WV);
+
+	const fallback = setup(t);
+	const fallbackReport = await fallback.manager().check(fallback.args);
+	assert.equal(fallbackReport.units.manifest, units, "an entry without its own fingerprint uses the manifest-wide one");
+	assert.equal(fallbackReport.units.matches, true);
+	assert.equal(fallbackReport.canInstall, true);
+
+	const override = syntheticManifest();
+	override.unitsSha256 = "0".repeat(64);
+	override.versions[SYN_VERSION].unitsSha256 = units;
+	const db = setup(t, { manifest: override });
+	const report = await db.manager().check(db.args);
+	assert.equal(report.units.manifest, units, "the entry-level fingerprint wins over the stale manifest-wide one");
+	assert.equal(report.units.matches, true);
+	assert.equal(report.ok, true);
+	assert.equal(report.canInstall, true);
+	const installed = await db.manager().install(db.args);
+	assert.equal(installed.ok, true);
+	assert.equal(installed.state, "patched");
+	assert.equal(installed.changed, true);
+	assert.equal(
+		hashOf(db.dist, "extension.js"),
+		override.versions[SYN_VERSION].files["extension.js"].patchedSha256
+	);
+
+	const stale = syntheticManifest();
+	stale.versions[SYN_VERSION].unitsSha256 = "1".repeat(64);
+	const staleDb = setup(t, { manifest: stale });
+	const staleReport = await staleDb.manager().check(staleDb.args);
+	assert.equal(staleReport.units.manifest, "1".repeat(64), "an entry-level fingerprint is not replaced by the manifest-wide one");
+	assert.equal(staleReport.units.matches, false);
+	assert.equal(staleReport.canInstall, false);
+	assert.ok(staleReport.issues.some((item) => item.code === "manifest-mismatch"));
+	const staleInstall = await staleDb.manager().install(staleDb.args);
+	assert.equal(staleInstall.ok, false);
+	assert.equal(staleInstall.changed, false);
+	assert.equal(
+		hashOf(staleDb.dist, "extension.js"),
+		stale.versions[SYN_VERSION].files["extension.js"].pristineSha256
+	);
 });
 
 test("install is transactional and idempotent; restore returns the exact pristine bytes", async (t) => {
@@ -644,7 +705,7 @@ function findInstalledDist(version) {
 	return null;
 }
 
-for (const version of ["0.8.2", "0.8.3"]) {
+for (const version of ["0.8.2", "0.8.3", "0.8.4"]) {
 	test(`real Kimi Code ${version}: check, install, no-op and restore`, async (t) => {
 		const source = findInstalledDist(version);
 		if (!source) {
@@ -658,7 +719,7 @@ for (const version of ["0.8.2", "0.8.3"]) {
 		for (const name of ["extension.js", "webview.js"]) {
 			fs.copyFileSync(source.files[name], path.join(dist, name));
 		}
-		const args = { extensionPath: root, version, extUnits: REAL_EXT_UNITS, wvUnits: REAL_WV_UNITS };
+		const args = { extensionPath: root, version, extUnits: REAL_EXT_UNITS, wvUnits: wvUnitsFor(version) };
 		const manager = new PatchDistManager({ backupDir: path.join(root, "backup"), manifest });
 
 		const check = await manager.check(args);
@@ -686,36 +747,58 @@ for (const version of ["0.8.2", "0.8.3"]) {
 	});
 }
 
-test("real 0.8.3 already-patched dist is recognized without a backup", async (t) => {
-	const source = findInstalledDist("0.8.3");
-	if (!source) return t.skip("Kimi Code 0.8.3 pristine dist is not installed or readable");
-	const installedDist = path.dirname(source.files["extension.js"]);
-	const current = {};
-	for (const [name, entry] of Object.entries(manifest.versions["0.8.3"].files)) {
-		const bytes = fs.readFileSync(path.join(installedDist, name));
-		if (sha256(bytes) !== entry.patchedSha256) return t.skip("the installed 0.8.3 dist is not currently patched");
-		current[name] = bytes;
+function installedDistDir(version) {
+	const base = path.join(os.homedir(), ".vscode", "extensions");
+	let names = [];
+	try {
+		names = fs.readdirSync(base);
+	} catch {
+		return null;
 	}
-	const root = tempRoot(t);
-	const dist = path.join(root, "dist");
-	fs.mkdirSync(dist, { recursive: true });
-	for (const [name, bytes] of Object.entries(current)) fs.writeFileSync(path.join(dist, name), bytes);
+	for (const name of names) {
+		if (!name.startsWith("moonshot-ai.kimi-code-")) continue;
+		const dir = path.join(base, name);
+		try {
+			const pkg = JSON.parse(fs.readFileSync(path.join(dir, "package.json"), "utf8"));
+			if (pkg.version === version) return path.join(dir, "dist");
+		} catch {
+			// Not an extension directory we can read.
+		}
+	}
+	return null;
+}
 
-	const args = { extensionPath: root, version: "0.8.3", extUnits: REAL_EXT_UNITS, wvUnits: REAL_WV_UNITS };
-	const manager = new PatchDistManager({ backupDir: path.join(root, "backup"), manifest });
-	const check = await manager.check(args);
-	assert.equal(check.ok, true);
-	assert.equal(check.state, "patched");
-	assert.equal(check.canInstall, true);
-	assert.equal(check.canRestore, false, "there is no pristine source to restore from");
-	assert.ok(check.issues.some((item) => item.code === "backup-missing"));
+for (const version of ["0.8.3", "0.8.4"]) {
+	test(`real ${version} already-patched dist is recognized without a backup`, async (t) => {
+		const installedDist = installedDistDir(version);
+		if (!installedDist) return t.skip(`Kimi Code ${version} is not installed`);
+		const current = {};
+		for (const [name, entry] of Object.entries(manifest.versions[version].files)) {
+			const bytes = fs.readFileSync(path.join(installedDist, name));
+			if (sha256(bytes) !== entry.patchedSha256) return t.skip(`the installed ${version} dist is not currently patched`);
+			current[name] = bytes;
+		}
+		const root = tempRoot(t);
+		const dist = path.join(root, "dist");
+		fs.mkdirSync(dist, { recursive: true });
+		for (const [name, bytes] of Object.entries(current)) fs.writeFileSync(path.join(dist, name), bytes);
 
-	const installed = await manager.install(args);
-	assert.equal(installed.ok, true);
-	assert.equal(installed.changed, false);
-	const restored = await manager.restore(args);
-	assert.equal(restored.ok, false);
-});
+		const args = { extensionPath: root, version, extUnits: REAL_EXT_UNITS, wvUnits: wvUnitsFor(version) };
+		const manager = new PatchDistManager({ backupDir: path.join(root, "backup"), manifest });
+		const check = await manager.check(args);
+		assert.equal(check.ok, true);
+		assert.equal(check.state, "patched");
+		assert.equal(check.canInstall, true);
+		assert.equal(check.canRestore, false, "there is no pristine source to restore from");
+		assert.ok(check.issues.some((item) => item.code === "backup-missing"));
+
+		const installed = await manager.install(args);
+		assert.equal(installed.ok, true);
+		assert.equal(installed.changed, false);
+		const restored = await manager.restore(args);
+		assert.equal(restored.ok, false);
+	});
+}
 
 test("install revalidates every target immediately before writing", async (t) => {
 	const db = setup(t);

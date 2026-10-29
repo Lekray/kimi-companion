@@ -110,6 +110,8 @@ const EXT_UNITS = [
 			"webviewIds: [...this.webviewIds] }); } catch {}"
 	}
 ];
+// The webview unit names the session-history store of the bundle it is spliced into, so
+// each bundle shape gets its own variant: 0.8.2/0.8.3 call it Qe, 0.8.4 renamed it to Ve.
 const WV_UNITS = [
 	{
 		marker: "__kimiCompanionLoadSessionInUi",
@@ -120,6 +122,22 @@ const WV_UNITS = [
 			"const IC=["
 	}
 ];
+const WV_UNITS_084 = [
+	{
+		marker: "__kimiCompanionLoadSessionInUi",
+		old: "const Ve=new zie,IC=[",
+		repl: "const Ve=new zie;" +
+			"window.__kimiCompanionLoadSessionInUi=async(sessionId)=>{const e=await Ve.loadSessionHistory(sessionId);await J0.getState().loadSession(sessionId,e);return e};" +
+			"window.addEventListener(\"message\",(m)=>{const d=m&&m.data;if(d&&d.event===\"__kimiCompanionLoadSession\"&&d.data&&d.data.sessionId)window.__kimiCompanionLoadSessionInUi(d.data.sessionId).catch(()=>{})});" +
+			"const IC=["
+	}
+];
+const WV_UNITS_BY_VERSION = { "0.8.4": WV_UNITS_084 };
+
+// A version without a variant of its own keeps the original anchor set.
+function wvUnitsFor(version) {
+	return WV_UNITS_BY_VERSION[String(version)] || WV_UNITS;
+}
 
 let log;
 let lastPersisted = "[]";
@@ -969,8 +987,10 @@ function diagnosticsReport(context) {
 	if (!dir) {
 		lines.push("  the Kimi extension is not installed — dist not checked");
 	} else {
+		const wvUnits = wvUnitsFor(kimiExt.packageJSON.version);
+		lines.push(`  webview unit set: ${wvUnits === WV_UNITS_084 ? "0.8.4 (Ve)" : "0.8.2–0.8.3 (Qe)"}`);
 		for (const line of unitStatusLines(path.join(dir, "extension.js"), EXT_UNITS)) lines.push(`  ${line}`);
-		for (const line of unitStatusLines(path.join(dir, "webview.js"), WV_UNITS)) lines.push(`  ${line}`);
+		for (const line of unitStatusLines(path.join(dir, "webview.js"), wvUnits)) lines.push(`  ${line}`);
 	}
 	if (lastPatchReport) {
 		lines.push("", "Patch operation", `  state: ${lastPatchReport.state}`);
@@ -1411,11 +1431,12 @@ function reconcile(context, reason) {
 // --- Patching the Kimi extension ------------------------------------
 
 function patchOptions(ext) {
+	const version = String(ext.packageJSON.version);
 	return {
 		extensionPath: ext.extensionUri.fsPath,
-		version: String(ext.packageJSON.version),
+		version,
 		extUnits: EXT_UNITS,
-		wvUnits: WV_UNITS
+		wvUnits: wvUnitsFor(version)
 	};
 }
 
@@ -1847,6 +1868,8 @@ module.exports = {
 		},
 		stripStatusMarker,
 		EXT_UNITS,
-		WV_UNITS
+		WV_UNITS,
+		WV_UNITS_084,
+		wvUnitsFor
 	}
 };

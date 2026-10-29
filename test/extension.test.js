@@ -192,7 +192,7 @@ test("status markers are stripped, user titles that only look similar are kept",
 });
 
 test("patch units: each marker is unique and only its own unit can introduce it", () => {
-	for (const units of [x.EXT_UNITS, x.WV_UNITS]) {
+	for (const units of [x.EXT_UNITS, x.WV_UNITS, x.WV_UNITS_084]) {
 		const markers = units.map((u) => u.marker);
 		assert.equal(new Set(markers).size, markers.length);
 		units.forEach((u, i) => {

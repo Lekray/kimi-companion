@@ -3,7 +3,8 @@
   "unitsSha256": "fa960c3fca21823f30349ced14430236c88b15d33634a4a5f7cee33b767f141e",
   "provenance": {
     "0.8.2": "pristine extension.js/webview.js from the official moonshot-ai.kimi-code 0.8.2 VSIX at marketplace.visualstudio.com/_apis/public/gallery/publishers/moonshot-ai/vsextensions/kimi-code/0.8.2/vspackage (gzip-wrapped zip), hashed 2026-10-26",
-    "0.8.3": "installed moonshot-ai.kimi-code-0.8.3-win32-x64/dist/*.bak-kimi-companion, cross-checked against the cached 0.8.3 VSIX, hashed 2026-10-26"
+    "0.8.3": "installed moonshot-ai.kimi-code-0.8.3-win32-x64/dist/*.bak-kimi-companion, cross-checked against the cached 0.8.3 VSIX, hashed 2026-10-26",
+    "0.8.4": "installed pristine moonshot-ai.kimi-code-0.8.4-win32-x64/dist/extension.js and dist/webview.js (no .bak files present), hashed 2026-10-29; the entry carries its own unitsSha256 because 0.8.4 renamed the webview session-history binding (Qe -> Ve)"
   },
   "versions": {
     "0.8.2": {
@@ -35,6 +36,23 @@
           "pristineSize": 6646484,
           "patchedSha256": "7798238f08319c5f53ab0848941da1f65c61e8eebc4673b5d7a85ed62625aa68",
           "patchedSize": 6646850
+        }
+      }
+    },
+    "0.8.4": {
+      "unitsSha256": "e1650133b8c027f2353b17c3fd05ea6aad7888d602103a03a2e3e9dfcc6aa8d6",
+      "files": {
+        "extension.js": {
+          "pristineSha256": "6787e2dc6d00ddebcf07226a4ee82b5acd8398c24785307695ce841919abf720",
+          "pristineSize": 9055125,
+          "patchedSha256": "133889722251bd4b2c3490c9f337a1db49c7d2377668e8dbf1693f7d267f1388",
+          "patchedSize": 9057689
+        },
+        "webview.js": {
+          "pristineSha256": "60c4d6c415d9334d0e905bcd41da962417e1089da7d3332e9f98c98c9b0a0b9b",
+          "pristineSize": 6646622,
+          "patchedSha256": "52dff347f936a9c15679c3c08f6ac35c4d00d451a1e5248b7feec3b8c9047cdc",
+          "patchedSize": 6646988
         }
       }
     }
